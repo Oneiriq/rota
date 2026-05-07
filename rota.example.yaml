@@ -12,6 +12,14 @@ daemon:
   check_interval_seconds: 3600
   renew_threshold_days: 30
 
+# Account-wide Namecheap credentials, shared by the CA + registrar
+# backends. client_ip must be on the account's whitelisted IP list —
+# Namecheap rejects requests otherwise.
+namecheap:
+  api_key_file: /etc/rota/secrets/namecheap-api.key
+  username: your-namecheap-username
+  client_ip: 1.2.3.4
+
 certs:
   - id: example-public
     description: example.com marketing site
@@ -20,12 +28,8 @@ certs:
     ca:
       kind: namecheap
       ssl_id: 12345678
-      api_key_file: /etc/rota/secrets/namecheap-api.key
-      username: your-namecheap-username
     registrar:
       kind: namecheap
-      api_key_file: /etc/rota/secrets/namecheap-api.key
-      username: your-namecheap-username
     install:
       kind: dsm
       description: My Public Site

@@ -2,8 +2,12 @@
 //!
 //! Owns scheduling, audit history, CA/registrar/install dispatch.
 //! CLI clients talk to it over a UNIX socket; the dashboard is served
-//! at the configured `listen_addr`. v0.0.0 is a load-bearing scaffold:
-//! the wiring is in place but renewals themselves are stubbed.
+//! at the configured `listen_addr`. Renewal pipeline wiring is staged
+//! across PRs; v0.0.0 wired the trait surface, this build adds the
+//! Namecheap CA + registrar implementations and the config-to-trait-
+//! object dispatch the scheduler will drive.
+
+mod backends;
 
 use std::path::PathBuf;
 
@@ -17,7 +21,12 @@ use tracing_subscriber::EnvFilter;
 #[command(name = "rotad", about = "rota daemon", version)]
 struct Args {
   /// Path to rota.yaml.
-  #[arg(short, long, env = "ROTA_CONFIG", default_value = "/etc/rota/rota.yaml")]
+  #[arg(
+    short,
+    long,
+    env = "ROTA_CONFIG",
+    default_value = "/etc/rota/rota.yaml"
+  )]
   config: PathBuf,
 }
 
@@ -34,6 +43,17 @@ async fn main() -> Result<()> {
     listen = %config.daemon.listen_addr,
     "rotad starting"
   );
+
+  let bundles = backends::build_from_config(&config)?;
+  for bundle in &bundles {
+    info!(
+      cert = %bundle.config.id,
+      ca = %bundle.ca.name(),
+      registrar = %bundle.registrar.name(),
+      install = bundle.install.as_ref().map(|i| i.name()).unwrap_or("(stub)"),
+      "cert backends bound"
+    );
+  }
 
   // v0.1: spawn scheduler loop, bind UNIX socket for CLI, bind HTTP
   // for dashboard, attach SQLite audit DB. The trait surface in
