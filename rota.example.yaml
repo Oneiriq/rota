@@ -1,0 +1,31 @@
+# rota.example.yaml
+#
+# Annotated reference. Copy to /etc/rota/rota.yaml (or wherever
+# `rotad --config` points) and fill in your own values. Mode 600 if
+# any secrets are inlined; rota prefers to read them from referenced
+# files so they don't sit in this tree.
+
+daemon:
+  database_path: /var/lib/rota/rota.db
+  listen_addr: 127.0.0.1:7878
+  socket_path: /var/run/rota.sock
+  check_interval_seconds: 3600
+  renew_threshold_days: 30
+
+certs:
+  - id: kushtaka-public
+    description: kushtaka.ai marketing site
+    domains: [kushtaka.ai, www.kushtaka.ai]
+    key_path: /var/lib/rota/keys/kushtaka.ai.key
+    ca:
+      kind: namecheap
+      ssl_id: 30571705
+      api_key_file: /etc/rota/secrets/namecheap-api.key
+      username: shonpt
+    registrar:
+      kind: namecheap
+      api_key_file: /etc/rota/secrets/namecheap-api.key
+      username: shonpt
+    install:
+      kind: dsm
+      description: Kushtakas Public Site
