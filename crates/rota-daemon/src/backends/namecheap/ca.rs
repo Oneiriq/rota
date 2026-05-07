@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rota_core::backend::{CABackend, DcvChallenge, IssuedCert};
+use rota_core::secrets::redact;
 use rota_core::{Error, Result};
 use tracing::{info, warn};
 
@@ -127,7 +128,11 @@ impl CABackend for NamecheapCa {
           warn!(status = %info.status, "namecheap cert not ready, polling");
         }
         Err(err) => {
-          warn!(?err, "namecheap getInfo failed, retrying");
+          // Use Display rather than Debug; reqwest's Debug embeds
+          // the request URL with `ApiKey=...` query params. Belt-
+          // and-braces redaction in case any wrapped layer also
+          // surfaces the URL via Display.
+          warn!(error = %redact(&err.to_string()), "namecheap getInfo failed, retrying");
         }
       }
       if start.elapsed() > POLL_DEADLINE {

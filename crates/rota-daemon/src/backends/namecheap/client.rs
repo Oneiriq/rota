@@ -6,9 +6,11 @@
 //! injects auth params consistently and surfaces a typed error when
 //! `Status="ERROR"` comes back in the response envelope.
 
+use std::fmt;
 use std::sync::Arc;
 
 use reqwest::Client;
+use rota_core::secrets::redact;
 use rota_core::{Error, Result};
 use tracing::debug;
 
@@ -22,7 +24,11 @@ const PRODUCTION_ENDPOINT: &str = "https://api.namecheap.com/xml.response";
 ///
 /// `client_ip` must match an entry on the account's "Whitelisted IPs"
 /// list, or Namecheap rejects the request.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is implemented manually so the api key never leaks through
+/// `dbg!`, `panic!("{:?}", ...)`, or tracing's `?` shorthand. Don't
+/// re-derive `Debug` here without thinking about the consequences.
+#[derive(Clone)]
 pub struct NamecheapCreds {
   pub api_user: String,
   pub api_key: String,
@@ -30,11 +36,31 @@ pub struct NamecheapCreds {
   pub client_ip: String,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for NamecheapCreds {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("NamecheapCreds")
+      .field("api_user", &self.api_user)
+      .field("api_key", &"<redacted>")
+      .field("username", &self.username)
+      .field("client_ip", &self.client_ip)
+      .finish()
+  }
+}
+
+#[derive(Clone)]
 pub struct NamecheapClient {
   http: Client,
   creds: NamecheapCreds,
   endpoint: &'static str,
+}
+
+impl fmt::Debug for NamecheapClient {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("NamecheapClient")
+      .field("creds", &self.creds)
+      .field("endpoint", &self.endpoint)
+      .finish_non_exhaustive()
+  }
 }
 
 impl NamecheapClient {
@@ -76,13 +102,44 @@ impl NamecheapClient {
       .query(&params)
       .send()
       .await
-      .map_err(|e| Error::Ca(format!("namecheap http: {e}")))?;
+      .map_err(|e| Error::Ca(format!("namecheap http: {}", redact(&e.to_string()))))?;
 
     let body = resp
       .text()
       .await
-      .map_err(|e| Error::Ca(format!("namecheap body: {e}")))?;
+      .map_err(|e| Error::Ca(format!("namecheap body: {}", redact(&e.to_string()))))?;
 
     parse_response(&body)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn debug_repr_redacts_api_key() {
+    let creds = NamecheapCreds {
+      api_user: "alice".to_owned(),
+      api_key: "deadbeefcafef00d".to_owned(),
+      username: "alice".to_owned(),
+      client_ip: "203.0.113.1".to_owned(),
+    };
+    let debug = format!("{creds:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("deadbeefcafef00d"));
+  }
+
+  #[test]
+  fn client_debug_does_not_leak_creds() {
+    let creds = NamecheapCreds {
+      api_user: "alice".to_owned(),
+      api_key: "topsecret123".to_owned(),
+      username: "alice".to_owned(),
+      client_ip: "203.0.113.1".to_owned(),
+    };
+    let client = NamecheapClient::new(creds);
+    let debug = format!("{client:?}");
+    assert!(!debug.contains("topsecret123"));
   }
 }

@@ -144,11 +144,16 @@ impl DsmInstall {
   }
 
   async fn run_import(&self, staged: &StagedPaths, existing_id: Option<&str>) -> Result<()> {
+    // `Command::args` passes each entry as a distinct argv slot, so
+    // synowebapi receives the description verbatim. Skip the manual
+    // `\"...\"` wrapping the prior version had; that was at best
+    // redundant and at worst broke when the operator put a `"`
+    // inside their description.
     let mut args = vec![
       format!("api={CERT_API}"),
       "method=import".to_owned(),
       "version=1".to_owned(),
-      format!("desc=\"{}\"", self.description),
+      format!("desc={}", self.description),
       format!("cert={}", staged.cert_path.display()),
       format!("inter_cert={}", staged.chain_path.display()),
       format!("key={}", staged.key_path.display()),
