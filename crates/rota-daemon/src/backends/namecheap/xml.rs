@@ -1,6 +1,6 @@
 //! Minimal XML response parsing for Namecheap.
 //!
-//! The full Namecheap schema is large and inconsistent — different
+//! The full Namecheap schema is large and inconsistent; different
 //! commands return wildly different element trees. Rather than write
 //! a strongly-typed deserializer per command, we walk the response
 //! tree looking for the few elements each backend needs, and surface

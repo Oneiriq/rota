@@ -1,4 +1,4 @@
-//! Config schema — the `rota.yaml` data model.
+//! Config schema for `rota.yaml`.
 //!
 //! The config is a list of certs. Each cert names a CA backend, a
 //! registrar backend, and an install backend by tag, plus their
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-/// Top-level config — what `rota.yaml` deserializes into.
+/// Top-level config: what `rota.yaml` deserializes into.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotaConfig {
   #[serde(default)]
@@ -90,7 +90,7 @@ pub struct CertConfig {
   /// FQDNs the cert covers. First entry is the CN.
   pub domains: Vec<String>,
   /// Persistent private key path (mode 600 expected). Reused across
-  /// every renewal — only the cert rotates.
+  /// every renewal; only the cert rotates.
   pub key_path: PathBuf,
   /// CA that issues this cert.
   pub ca: CaSpec,
@@ -101,7 +101,7 @@ pub struct CertConfig {
 }
 
 /// Account-wide Namecheap credentials. Whitelisted client IP is the
-/// daemon's outbound IP — Namecheap rejects API calls from anywhere
+/// daemon's outbound IP. Namecheap rejects API calls from anywhere
 /// else.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamecheapAccount {
@@ -110,7 +110,7 @@ pub struct NamecheapAccount {
   pub api_key_file: PathBuf,
   /// Namecheap username (account owner).
   pub username: String,
-  /// API user — almost always the same as `username` but Namecheap
+  /// API user. Almost always the same as `username`, but Namecheap
   /// permits split values for sub-accounts.
   #[serde(default)]
   pub api_user: Option<String>,

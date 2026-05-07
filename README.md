@@ -1,12 +1,10 @@
 # rota
 
-Cert renewal for self-hosters. Single binary, CLI plus dashboard, works against any CA, any registrar, any install target.
+Cert renewal for self-hosters. One Rust binary, CLI plus dashboard, pluggable CAs, registrars, and install targets.
 
----
+## Why I'm building this
 
-## Why this exists
-
-Public TLS certificate lifetimes are shrinking on a fixed schedule. CA/Browser Forum [Ballot SC-081][sc-081] — adopted unanimously in April 2025 — drops the maximum validity of publicly trusted certificates from 397 days down to 47 days over four years:
+Public TLS certificate lifetimes are getting shorter on a fixed schedule. CA/Browser Forum [Ballot SC-081][sc-081], adopted in April 2025, drops the maximum validity of publicly trusted certs from 397 days down to 47 days over four years:
 
 | Effective | Max validity |
 |---|---|
@@ -14,99 +12,71 @@ Public TLS certificate lifetimes are shrinking on a fixed schedule. CA/Browser F
 | 2027-03-15 | 100 days |
 | 2029-03-15 | 47 days |
 
-### Apple's stated reasoning
+Apple championed the ballot. Their argument ([Apple Platform Security][apple-pki]) is that shorter validity reduces the damage window when a key gets compromised, encourages more automation, and reduces dependence on revocation infrastructure that has been historically unreliable.
 
-The ballot was authored and championed by Apple. Their public position ([Apple Platform Security][apple-pki]) is that shorter validity:
+Fair enough as far as it goes. Where it falls down for me:
 
-- Reduces the damage window when a key or domain registration is compromised.
-- Encourages broader adoption of automation, which they argue makes the ecosystem more secure overall.
-- Reduces dependence on revocation infrastructure (CRL / OCSP), which has been historically unreliable.
+1. Revocation isn't broken so much as underfunded. OCSP stapling and CRLite are real and deployed.
+2. The historic CA failures (DigiNotar, Symantec, TrustCor) weren't validity failures. They were infrastructure compromises and policy failures. Shorter cert lifetimes wouldn't have helped.
+3. The cost falls hardest on small operators. Cloud customers absorb 47-day renewal automatically; air-gapped, embedded, IoT, and self-hosted setups pay the entire complexity tax. The rational response from a small operator is to hand DNS to a managed proxy and stop self-hosting. That's a power shift away from individuals running their own infrastructure.
 
-That position is defensible. Short-validity ecosystems do reduce some classes of risk, and revocation has, in practice, been hard to make work at scale.
-
-### Where the reasoning frays
-
-Three trade-offs the public framing mostly steps around:
-
-1. **Revocation isn't broken so much as underfunded.** OCSP-stapling and CRLite are both real, both deployed, and both demonstrably reduce reliance on the legacy CRL fetch path. Mozilla and Cloudflare have published the operational playbooks. Shortening validity papers over a fixable problem rather than fixing it.
-2. **The historic failures aren't validity failures.** DigiNotar (2011), Symantec's distrust (2017), TrustCor's removal (2022) — none of those would have been mitigated by shorter validity. They were CA infrastructure compromises and policy failures. The largest classes of PKI risk are not in the cert lifetime axis.
-3. **The cost is unevenly distributed.** Cloud providers and managed-CA customers absorb 47-day renewal automatically; the contractual surface where automation lives is theirs. Air-gapped, embedded, IoT, and self-hosted deployments — where automation is harder by design or is the operator's responsibility — pay the entire complexity tax. The rational response from a small operator is to hand DNS to a managed proxy and call it a day. Net effect: shifting power away from individuals running their own infrastructure, toward a smaller pool of managed-CA and edge-proxy vendors.
-
-This isn't a screed. The CA/Browser Forum vote was unanimous; technically literate people on the other side of the trade-off think it's the right call. The trade-off is real, though, and self-hosters bear most of the cost.
-
-**rota is the tooling that puts running your own certs back within reach.**
+I run my own stuff and I'd like to keep doing that. So I'm writing the tool I'd want.
 
 [sc-081]: https://cabforum.org/2025/04/11/ballot-sc-081v3-introduce-schedule-of-reducing-validity-and-data-reuse-periods/
 [apple-pki]: https://support.apple.com/guide/security/welcome/web
 
----
+## What it does
 
-## What rota does
-
-- Watches your CA-issued certs. Knows when they're close to expiry.
+- Watches your CA-issued certs and knows when they're close to expiry.
 - Generates fresh CSRs against persistent private keys you control.
-- Submits reissue / renewal requests to the CA over that CA's preferred API.
+- Submits reissue or renewal requests to the CA over that CA's API.
 - Completes domain-control validation by writing TXT records at your registrar.
-- Installs issued certs where they need to land — DSM Synology, plain filesystem, future: Kubernetes Secret, nginx reload, HAProxy.
-- Logs every step. Surfaces a real-time dashboard. Alerts before failures, not after them.
-
----
+- Installs issued certs where they need to land. v0.1 covers Synology DSM and a plain filesystem target. More on the roadmap.
+- Logs every step. Surfaces a real-time dashboard. Alerts before failures, not after.
 
 ## Architecture
 
-A single Rust binary running as a daemon, with two thin clients sharing its state.
+One Rust binary running as a daemon, with two thin clients sharing its state.
 
 ```
-┌──────────────┐        ┌──────────────────────────┐
-│  rota CLI    │ ─────▶ │       rotad (daemon)     │
-└──────────────┘ socket │  scheduler · audit · API │
-                        │  HTTP + WS · SQLite      │
-┌──────────────┐  HTTP  │                          │
-│  Dashboard   │ ─────▶ │                          │
-│ (htmx + SSR) │   WS   └──────────────────────────┘
-└──────────────┘                  │   │   │
-                          ┌───────┘   │   └────────┐
-                          ▼           ▼            ▼
-                       CABackend  Registrar   InstallBackend
-                                  Backend
-                       Namecheap  Namecheap    DSM (Synology)
-                       (more →)   (more →)     Filesystem
-                                                (more →)
+rota CLI ──── socket ────▶ rotad (daemon)
+                           scheduler, audit, API
+                           HTTP + WS, SQLite
+Dashboard ──── HTTP ─────▶
+(htmx + SSR)   WS                │   │   │
+                          ┌──────┘   │   └──────┐
+                          ▼          ▼          ▼
+                        CABackend Registrar Install
+                                  Backend   Backend
+
+                        Namecheap Namecheap DSM (Synology)
+                        (more)    (more)    Filesystem
+                                            (more)
 ```
 
-The daemon, CLI, and dashboard all build from the same Cargo workspace and ship as one binary. No Node, no Deno, no npm — `cargo install rota` and you have everything.
-
----
+Daemon, CLI, and dashboard all build from one Cargo workspace and ship as a single binary. No Node, no Deno, no npm. `cargo install rota` and you have everything.
 
 ## Backends
 
-Three load-bearing abstractions decouple the renewal pipeline from any one vendor:
+Three trait surfaces decouple the renewal pipeline from any one vendor:
 
-- **`CABackend`** — issues certs. v0.1 ships with Namecheap (traditional reissue API). Roadmap: Let's Encrypt via ACME, Sectigo direct, ZeroSSL, GoDaddy.
-- **`RegistrarBackend`** — completes DNS-01 DCV by writing TXT records. v0.1 ships with Namecheap. Roadmap: Cloudflare, Route 53, DigitalOcean, Porkbun.
-- **`InstallBackend`** — drops issued cert + chain where the system serving the domain can read them. v0.1 ships with DSM (Synology) via `synowebapi` and a plain filesystem target. Roadmap: Kubernetes Secret, nginx reload, HAProxy CLI.
+- **`CABackend`**: issues certs. v0.1 ships with Namecheap (traditional reissue API). Roadmap: Let's Encrypt via ACME, Sectigo direct, ZeroSSL, GoDaddy.
+- **`RegistrarBackend`**: completes DNS-01 DCV by writing TXT records. v0.1 ships with Namecheap. Roadmap: Cloudflare, Route 53, DigitalOcean, Porkbun.
+- **`InstallBackend`**: drops issued cert + chain where the system serving the domain can read them. v0.1 ships with DSM (Synology) via `synowebapi` and a plain filesystem target. Roadmap: Kubernetes Secret, nginx reload, HAProxy CLI.
 
-Each entry in `rota.yaml` picks one of each, so a fleet of self-hosted sites across mixed registrars and hosts runs through the same renewal pipeline.
-
-Adding support for a new vendor is one trait impl, not a fork of the renewal logic.
-
----
+Each entry in `rota.yaml` picks one of each, so a mixed fleet runs through the same pipeline. Adding a new vendor is one trait impl, not a fork of the renewal logic.
 
 ## Status
 
-**v0.0.0 — scaffolding.** The trait surface, config schema, and CLI/daemon skeletons are in place. Backends are not yet implemented. See the roadmap below.
-
----
+v0.0.0. The trait surface, config schema, CLI/daemon skeletons, Namecheap CA + registrar backends, and DSM + filesystem install backends are in place. The scheduler loop, UNIX socket, audit DB, and dashboard land in v0.1.
 
 ## Roadmap
 
-- **v0.1** — CLI and daemon end-to-end. Namecheap CA + registrar backends. DSM and filesystem install backends. SQLite audit log. Dashboard cert table + per-cert detail view.
-- **v0.2** — ACME backend (Let's Encrypt, ZeroSSL). Cloudflare registrar backend.
-- **v0.3** — Email + webhook alerts. Prometheus `/metrics` endpoint.
-- **v0.4** — Kubernetes Secret + nginx reload + HAProxy install backends.
-- **v0.5** — HTTP-01 DCV strategy, multi-host federation.
-
----
+- v0.1: CLI and daemon end-to-end. SQLite audit log. Dashboard cert table + per-cert detail view.
+- v0.2: ACME backend (Let's Encrypt, ZeroSSL). Cloudflare registrar backend.
+- v0.3: Email + webhook alerts. Prometheus `/metrics` endpoint.
+- v0.4: Kubernetes Secret + nginx reload + HAProxy install backends.
+- v0.5: HTTP-01 DCV strategy, multi-host federation.
 
 ## License
 
@@ -114,4 +84,4 @@ Apache 2.0. See [LICENSE](./LICENSE).
 
 ## Author
 
-Shon Thomas — [Oneiriq](https://oneiriq.com).
+Shon Thomas, [Oneiriq](https://oneiriq.com).

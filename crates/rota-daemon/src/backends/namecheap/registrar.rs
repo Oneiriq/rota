@@ -130,7 +130,7 @@ struct SplitName {
 }
 
 /// Split `_acme-challenge.example.com` into
-/// `(subdomain="_acme-challenge", sld="example", tld="ai")`. The
+/// `(subdomain="_acme-challenge", sld="example", tld="com")`. The
 /// Namecheap DNS API addresses domains as separate SLD + TLD parts.
 fn split_record_name(record_name: &str) -> Result<SplitName> {
   let parts: Vec<&str> = record_name.trim_end_matches('.').split('.').collect();
@@ -215,7 +215,7 @@ mod tests {
     let s = split_record_name("_acme-challenge.example.com").unwrap();
     assert_eq!(s.subdomain, "_acme-challenge");
     assert_eq!(s.sld, "example");
-    assert_eq!(s.tld, "ai");
+    assert_eq!(s.tld, "com");
   }
 
   #[test]
@@ -223,7 +223,7 @@ mod tests {
     let s = split_record_name("example.com").unwrap();
     assert_eq!(s.subdomain, "@");
     assert_eq!(s.sld, "example");
-    assert_eq!(s.tld, "ai");
+    assert_eq!(s.tld, "com");
   }
 
   #[test]
@@ -231,7 +231,7 @@ mod tests {
     let s = split_record_name("_acme-challenge.api.dashboard.example.com").unwrap();
     assert_eq!(s.subdomain, "_acme-challenge.api.dashboard");
     assert_eq!(s.sld, "example");
-    assert_eq!(s.tld, "ai");
+    assert_eq!(s.tld, "com");
   }
 
   #[test]

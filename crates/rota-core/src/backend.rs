@@ -1,11 +1,11 @@
-//! Backend traits — the load-bearing abstractions.
+//! Backend traits.
 //!
 //! Three independent axes:
 //!
-//! 1. **CA backend** — who signs the cert.
-//! 2. **Registrar backend** — where DNS-01 TXT records are published
+//! 1. **CA backend**: who signs the cert.
+//! 2. **Registrar backend**: where DNS-01 TXT records are published
 //!    for domain-control validation.
-//! 3. **Install backend** — where the issued cert + chain land so the
+//! 3. **Install backend**: where the issued cert + chain land so the
 //!    system serving the domain can pick them up.
 //!
 //! A `CertConfig` picks one of each; the renewal pipeline composes

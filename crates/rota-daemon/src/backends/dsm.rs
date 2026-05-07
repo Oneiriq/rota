@@ -12,8 +12,8 @@
 //!    with the staged paths and the optional id. DSM reloads its nginx
 //!    automatically as part of the import.
 //!
-//! `synowebapi` only exists on a running DSM box so this backend is
-//! exercised by integration tests on real hardware, not in CI. The dispatch
+//! `synowebapi` only exists on a running DSM box so the binary call
+//! itself is exercised on real hardware, not in CI. The dispatch
 //! logic, JSON parsing, and command construction are unit-tested in
 //! isolation here.
 
@@ -53,8 +53,9 @@ impl DsmInstall {
     }
   }
 
-  /// Stage cert artifacts to disk. Public for integration tests on
-  /// the host; the daemon path goes through `install`.
+  /// Stage cert artifacts to disk. Public so on-host integration
+  /// tests can drive it directly; the daemon path goes through
+  /// `install`.
   pub async fn stage(
     &self,
     cert: &IssuedCert,

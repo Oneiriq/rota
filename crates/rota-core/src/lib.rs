@@ -3,13 +3,13 @@
 //! Three abstractions decouple the renewal pipeline from any one CA,
 //! registrar, or install target:
 //!
-//! - [`backend::CABackend`] — issues certificates from a Certificate
+//! - [`backend::CABackend`]: issues certificates from a Certificate
 //!   Authority (Namecheap traditional reissue API today; Let's Encrypt
 //!   via ACME, Sectigo direct, ZeroSSL, GoDaddy on the roadmap).
-//! - [`backend::RegistrarBackend`] — manages DNS records for DCV
+//! - [`backend::RegistrarBackend`]: manages DNS records for DCV
 //!   (Namecheap today; Cloudflare, Route 53, DigitalOcean, Porkbun on
 //!   the roadmap).
-//! - [`backend::InstallBackend`] — places issued certs where the
+//! - [`backend::InstallBackend`]: places issued certs where the
 //!   system that serves them can read them (DSM via synowebapi and
 //!   plain filesystem today; Kubernetes Secret, nginx reload, HAProxy
 //!   on the roadmap).

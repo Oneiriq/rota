@@ -91,8 +91,8 @@ impl InstallBackend for FilesystemInstall {
 }
 
 /// Concatenate the leaf cert and chain into a single PEM bundle.
-/// Ensures exactly one newline between the two — both inputs may or
-/// may not have a trailing newline.
+/// Ensures exactly one newline between the two, since both inputs
+/// may or may not have a trailing newline.
 fn concat_pem(cert_pem: &str, chain_pem: &str) -> Vec<u8> {
   let cert_trim = cert_pem.trim_end_matches('\n');
   let chain_trim = chain_pem.trim_start_matches('\n');
