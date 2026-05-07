@@ -16,3 +16,8 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+x509-parser = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+time = "0.3"

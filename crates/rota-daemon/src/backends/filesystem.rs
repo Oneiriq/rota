@@ -88,6 +88,15 @@ impl InstallBackend for FilesystemInstall {
     );
     Ok(())
   }
+
+  async fn current_cert_pem(&self, _cert_id: &str) -> Result<Option<String>> {
+    let path = self.path("crt");
+    match fs::read_to_string(&path).await {
+      Ok(pem) => Ok(Some(pem)),
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+      Err(e) => Err(Error::Install(format!("read cert {}: {e}", path.display()))),
+    }
+  }
 }
 
 /// Concatenate the leaf cert and chain into a single PEM bundle.
@@ -238,6 +247,23 @@ mod tests {
     assert!(crt.contains("LEAF2"));
     assert!(!crt.contains("LEAF\n"));
     assert_eq!(key, "KEY2");
+  }
+
+  #[tokio::test]
+  async fn current_cert_pem_returns_none_before_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install = FilesystemInstall::new(tmp.path().to_owned(), "fresh".to_owned());
+    let pem = install.current_cert_pem("fresh").await.unwrap();
+    assert!(pem.is_none());
+  }
+
+  #[tokio::test]
+  async fn current_cert_pem_returns_written_cert() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install = FilesystemInstall::new(tmp.path().to_owned(), "ready".to_owned());
+    install.install(&issued_cert(), "KEY", &[]).await.unwrap();
+    let pem = install.current_cert_pem("ready").await.unwrap().unwrap();
+    assert!(pem.contains("LEAF"));
   }
 
   #[test]
