@@ -1,6 +1,6 @@
 //! Minimal XML response parsing for Namecheap.
 //!
-//! The full Namecheap schema is large and inconsistent — different
+//! The full Namecheap schema is large and inconsistent; different
 //! commands return wildly different element trees. Rather than write
 //! a strongly-typed deserializer per command, we walk the response
 //! tree looking for the few elements each backend needs, and surface
@@ -172,7 +172,7 @@ mod tests {
     let body = r#"<?xml version="1.0" encoding="utf-8"?>
 <ApiResponse Status="OK" xmlns="http://api.namecheap.com/xml.response">
   <CommandResponse Type="namecheap.ssl.reissue">
-    <SSLReissueResult IsSuccess="true" CertificateID="30571705"/>
+    <SSLReissueResult IsSuccess="true" CertificateID="12345678"/>
   </CommandResponse>
 </ApiResponse>"#;
     let resp = parse_response(body).unwrap();

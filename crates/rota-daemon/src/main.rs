@@ -1,4 +1,4 @@
-//! `rotad` — the rota daemon.
+//! `rotad`: the rota daemon.
 //!
 //! Owns scheduling, audit history, CA/registrar/install dispatch.
 //! CLI clients talk to it over a UNIX socket; the dashboard is served

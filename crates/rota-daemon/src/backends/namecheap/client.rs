@@ -14,14 +14,14 @@ use tracing::debug;
 
 use super::xml::{parse_response, ApiResponse};
 
-/// Production endpoint. Sandbox is `https://api.sandbox.namecheap.com/xml.response`
-/// — wire it in alongside the first integration test that needs it.
+/// Production endpoint. Sandbox is `https://api.sandbox.namecheap.com/xml.response`;
+/// wire it in alongside the first integration test that needs it.
 const PRODUCTION_ENDPOINT: &str = "https://api.namecheap.com/xml.response";
 
 /// Authentication material the Namecheap API requires on every call.
 ///
 /// `client_ip` must match an entry on the account's "Whitelisted IPs"
-/// list — Namecheap rejects the request otherwise.
+/// list, or Namecheap rejects the request.
 #[derive(Debug, Clone)]
 pub struct NamecheapCreds {
   pub api_user: String,

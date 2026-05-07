@@ -1,7 +1,7 @@
 //! `namecheap.ssl.reissue` + `namecheap.ssl.getInfo` flow.
 //!
-//! v0.1 only handles **reissue** within an existing SSL subscription
-//! — first-time activation is one-shot and Namecheap requires a long
+//! v0.1 only handles **reissue** within an existing SSL subscription.
+//! First-time activation is one-shot and Namecheap requires a long
 //! list of admin contact fields that we don't want to model in the
 //! config. Operators activate once by hand in Namecheap's UI; rota
 //! handles every renewal after that.
@@ -71,7 +71,7 @@ impl CABackend for NamecheapCa {
     // The response carries either an `<HostName>`/`<Target>` pair (CNAME
     // validation) or a `<TxtName>`/`<TxtValue>` pair depending on the
     // CA tier. We surface whichever shape we get back as a TXT-style
-    // challenge — the caller's RegistrarBackend handles the publish.
+    // challenge; the caller's RegistrarBackend handles the publish.
     let resp = self
       .client
       .call(

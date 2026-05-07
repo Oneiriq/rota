@@ -1,6 +1,6 @@
 [package]
 name = "rota-daemon"
-description = "Long-running rota daemon — scheduler, dashboard, audit"
+description = "Long-running rota daemon. Scheduler, dashboard, audit."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

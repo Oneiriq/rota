@@ -91,8 +91,8 @@ impl InstallBackend for FilesystemInstall {
 }
 
 /// Concatenate the leaf cert and chain into a single PEM bundle.
-/// Ensures exactly one newline between the two — both inputs may or
-/// may not have a trailing newline.
+/// Ensures exactly one newline between the two, since both inputs
+/// may or may not have a trailing newline.
 fn concat_pem(cert_pem: &str, chain_pem: &str) -> Vec<u8> {
   let cert_trim = cert_pem.trim_end_matches('\n');
   let chain_trim = chain_pem.trim_start_matches('\n');
@@ -177,16 +177,16 @@ mod tests {
   #[tokio::test]
   async fn writes_four_files_with_correct_modes() {
     let tmp = tempfile::tempdir().unwrap();
-    let install = FilesystemInstall::new(tmp.path().to_owned(), "kushtaka-public".to_owned());
+    let install = FilesystemInstall::new(tmp.path().to_owned(), "example-public".to_owned());
     install
       .install(&issued_cert(), "PRIVKEYPEM", &[])
       .await
       .unwrap();
 
-    let crt = tmp.path().join("kushtaka-public.crt");
-    let chain = tmp.path().join("kushtaka-public.chain.crt");
-    let fullchain = tmp.path().join("kushtaka-public.fullchain.crt");
-    let key = tmp.path().join("kushtaka-public.key");
+    let crt = tmp.path().join("example-public.crt");
+    let chain = tmp.path().join("example-public.chain.crt");
+    let fullchain = tmp.path().join("example-public.fullchain.crt");
+    let key = tmp.path().join("example-public.key");
 
     assert!(crt.exists());
     assert!(chain.exists());

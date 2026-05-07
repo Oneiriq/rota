@@ -12,24 +12,24 @@ daemon:
   check_interval_seconds: 3600
   renew_threshold_days: 30
 
-# Account-wide Namecheap credentials, shared by the CA + registrar
-# backends. client_ip must be on the account's whitelisted IP list —
-# Namecheap rejects requests otherwise.
+# Account-wide Namecheap credentials, shared by the CA and registrar
+# backends. client_ip must be on the account's whitelisted IP list,
+# or Namecheap will reject the request.
 namecheap:
   api_key_file: /etc/rota/secrets/namecheap-api.key
-  username: shonpt
+  username: your-namecheap-username
   client_ip: 1.2.3.4
 
 certs:
-  - id: kushtaka-public
-    description: kushtaka.ai marketing site
-    domains: [kushtaka.ai, www.kushtaka.ai]
-    key_path: /var/lib/rota/keys/kushtaka.ai.key
+  - id: example-public
+    description: example.com marketing site
+    domains: [example.com, www.example.com]
+    key_path: /var/lib/rota/keys/example.com.key
     ca:
       kind: namecheap
-      ssl_id: 30571705
+      ssl_id: 12345678
     registrar:
       kind: namecheap
     install:
       kind: dsm
-      description: Kushtakas Public Site
+      description: My Public Site

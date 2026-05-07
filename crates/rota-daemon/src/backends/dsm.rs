@@ -12,8 +12,8 @@
 //!    with the staged paths and the optional id. DSM reloads its nginx
 //!    automatically as part of the import.
 //!
-//! `synowebapi` only exists on a running DSM box so this backend is
-//! exercised by integration tests on aur0, not in CI. The dispatch
+//! `synowebapi` only exists on a running DSM box so the binary call
+//! itself is exercised on real hardware, not in CI. The dispatch
 //! logic, JSON parsing, and command construction are unit-tested in
 //! isolation here.
 
@@ -53,8 +53,9 @@ impl DsmInstall {
     }
   }
 
-  /// Stage cert artifacts to disk. Public for integration tests on
-  /// aur0; the daemon path goes through `install`.
+  /// Stage cert artifacts to disk. Public so on-host integration
+  /// tests can drive it directly; the daemon path goes through
+  /// `install`.
   pub async fn stage(
     &self,
     cert: &IssuedCert,
@@ -297,7 +298,7 @@ mod tests {
   fn list_response_parses_existing_cert() {
     let body = br#"{"success":true,"data":{"certificates":[
       {"id":"abc123","desc":"Other Cert"},
-      {"id":"def456","desc":"Kushtakas Public Site"}
+      {"id":"def456","desc":"My Public Site"}
     ]}}"#;
     let parsed: ListResponse = serde_json::from_slice(body).unwrap();
     assert!(parsed.success);
@@ -305,7 +306,7 @@ mod tests {
       .data
       .certificates
       .into_iter()
-      .find(|c| c.desc == "Kushtakas Public Site")
+      .find(|c| c.desc == "My Public Site")
       .unwrap();
     assert_eq!(found.id, "def456");
   }

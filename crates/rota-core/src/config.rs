@@ -1,4 +1,4 @@
-//! Config schema — the `rota.yaml` data model.
+//! Config schema for `rota.yaml`.
 //!
 //! The config is a list of certs. Each cert names a CA backend, a
 //! registrar backend, and an install backend by tag, plus their
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-/// Top-level config — what `rota.yaml` deserializes into.
+/// Top-level config: what `rota.yaml` deserializes into.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotaConfig {
   #[serde(default)]
@@ -90,7 +90,7 @@ pub struct CertConfig {
   /// FQDNs the cert covers. First entry is the CN.
   pub domains: Vec<String>,
   /// Persistent private key path (mode 600 expected). Reused across
-  /// every renewal — only the cert rotates.
+  /// every renewal; only the cert rotates.
   pub key_path: PathBuf,
   /// CA that issues this cert.
   pub ca: CaSpec,
@@ -101,7 +101,7 @@ pub struct CertConfig {
 }
 
 /// Account-wide Namecheap credentials. Whitelisted client IP is the
-/// daemon's outbound IP — Namecheap rejects API calls from anywhere
+/// daemon's outbound IP. Namecheap rejects API calls from anywhere
 /// else.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamecheapAccount {
@@ -110,7 +110,7 @@ pub struct NamecheapAccount {
   pub api_key_file: PathBuf,
   /// Namecheap username (account owner).
   pub username: String,
-  /// API user — almost always the same as `username` but Namecheap
+  /// API user. Almost always the same as `username`, but Namecheap
   /// permits split values for sub-accounts.
   #[serde(default)]
   pub api_user: Option<String>,
@@ -191,17 +191,17 @@ mod tests {
     let cfg = RotaConfig::load(&example_path).expect("rota.example.yaml must parse");
     assert_eq!(cfg.certs.len(), 1);
     let cert = &cfg.certs[0];
-    assert_eq!(cert.id, "kushtaka-public");
-    assert_eq!(cert.domains, vec!["kushtaka.ai", "www.kushtaka.ai"]);
+    assert_eq!(cert.id, "example-public");
+    assert_eq!(cert.domains, vec!["example.com", "www.example.com"]);
     let nc = cfg.namecheap.expect("example uses namecheap");
-    assert_eq!(nc.username, "shonpt");
+    assert_eq!(nc.username, "your-namecheap-username");
     assert_eq!(nc.client_ip, "1.2.3.4");
     match cert.ca {
-      CaSpec::Namecheap { ssl_id } => assert_eq!(ssl_id, 30571705),
+      CaSpec::Namecheap { ssl_id } => assert_eq!(ssl_id, 12345678),
     }
     assert!(matches!(cert.registrar, RegistrarSpec::Namecheap));
     match &cert.install {
-      InstallSpec::Dsm { description } => assert_eq!(description, "Kushtakas Public Site"),
+      InstallSpec::Dsm { description } => assert_eq!(description, "My Public Site"),
       _ => panic!("expected dsm install"),
     }
   }
@@ -224,20 +224,20 @@ namecheap:
   username: u
   client_ip: 1.2.3.4
 certs:
-  - id: oneiriq-public
-    domains: [oneiriq.com]
-    key_path: /tmp/oneiriq.key
+  - id: example-fs
+    domains: [example.org]
+    key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
     registrar: { kind: namecheap }
     install:
       kind: filesystem
-      directory: /etc/ssl/oneiriq
+      directory: /etc/ssl/example
 "#;
     let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
     let cert = &cfg.certs[0];
     match &cert.install {
       InstallSpec::Filesystem { directory } => {
-        assert_eq!(directory, &PathBuf::from("/etc/ssl/oneiriq"));
+        assert_eq!(directory, &PathBuf::from("/etc/ssl/example"));
       }
       _ => panic!("expected filesystem install"),
     }

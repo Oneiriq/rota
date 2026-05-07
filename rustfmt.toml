@@ -7,5 +7,5 @@ reorder_imports = true
 use_field_init_shorthand = true
 use_try_shorthand = true
 # imports_granularity = "Module" + group_imports = "StdExternalCrate" are
-# nightly-only — re-enable once those options stabilize on the pinned
+# nightly-only. Re-enable once those options stabilize on the pinned
 # toolchain (1.88.0 stable as of writing).

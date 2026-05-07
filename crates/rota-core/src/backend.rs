@@ -1,11 +1,11 @@
-//! Backend traits — the load-bearing abstractions.
+//! Backend traits.
 //!
 //! Three independent axes:
 //!
-//! 1. **CA backend** — who signs the cert.
-//! 2. **Registrar backend** — where DNS-01 TXT records are published
+//! 1. **CA backend**: who signs the cert.
+//! 2. **Registrar backend**: where DNS-01 TXT records are published
 //!    for domain-control validation.
-//! 3. **Install backend** — where the issued cert + chain land so the
+//! 3. **Install backend**: where the issued cert + chain land so the
 //!    system serving the domain can pick them up.
 //!
 //! A `CertConfig` picks one of each; the renewal pipeline composes
@@ -29,7 +29,7 @@ pub struct IssuedCert {
 #[derive(Debug, Clone)]
 pub struct DcvChallenge {
   /// FQDN at which the TXT record must be published
-  /// (e.g. `_acme-challenge.kushtaka.ai` or whatever the CA dictates).
+  /// (e.g. `_acme-challenge.example.com` or whatever the CA dictates).
   pub record_name: String,
   /// Value the TXT record must hold.
   pub record_value: String,

@@ -35,10 +35,9 @@ pub struct CertBackends {
 /// Build the full backend set from a parsed config.
 ///
 /// The Namecheap HTTP client is constructed once per call and shared
-/// across every cert that names Namecheap as its CA or registrar —
-/// matches Namecheap's rate-limit model and avoids redundant
-/// connection setup. Install backends are stubbed in this PR; they
-/// land alongside the DSM + filesystem implementations.
+/// across every cert that names Namecheap as its CA or registrar.
+/// Matches Namecheap's rate-limit model and avoids redundant
+/// connection setup.
 pub fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
   let namecheap_client = match &config.namecheap {
     Some(account) => Some(build_namecheap_client(account)?),

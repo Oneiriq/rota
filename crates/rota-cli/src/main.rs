@@ -1,4 +1,4 @@
-//! `rota` — the command-line client.
+//! `rota`: the command-line client.
 //!
 //! Thin client that talks to `rotad` over a UNIX socket for
 //! status/manual-renew/install operations. Designed so every action

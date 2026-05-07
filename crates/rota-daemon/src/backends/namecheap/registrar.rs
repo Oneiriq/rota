@@ -129,8 +129,8 @@ struct SplitName {
   tld: String,
 }
 
-/// Split `_acme-challenge.kushtaka.ai` into
-/// `(subdomain="_acme-challenge", sld="kushtaka", tld="ai")`. The
+/// Split `_acme-challenge.example.com` into
+/// `(subdomain="_acme-challenge", sld="example", tld="com")`. The
 /// Namecheap DNS API addresses domains as separate SLD + TLD parts.
 fn split_record_name(record_name: &str) -> Result<SplitName> {
   let parts: Vec<&str> = record_name.trim_end_matches('.').split('.').collect();
@@ -212,26 +212,26 @@ mod tests {
 
   #[test]
   fn splits_three_label_record() {
-    let s = split_record_name("_acme-challenge.kushtaka.ai").unwrap();
+    let s = split_record_name("_acme-challenge.example.com").unwrap();
     assert_eq!(s.subdomain, "_acme-challenge");
-    assert_eq!(s.sld, "kushtaka");
-    assert_eq!(s.tld, "ai");
+    assert_eq!(s.sld, "example");
+    assert_eq!(s.tld, "com");
   }
 
   #[test]
   fn splits_apex_only() {
-    let s = split_record_name("kushtaka.ai").unwrap();
+    let s = split_record_name("example.com").unwrap();
     assert_eq!(s.subdomain, "@");
-    assert_eq!(s.sld, "kushtaka");
-    assert_eq!(s.tld, "ai");
+    assert_eq!(s.sld, "example");
+    assert_eq!(s.tld, "com");
   }
 
   #[test]
   fn splits_nested_subdomain() {
-    let s = split_record_name("_acme-challenge.api.dashboard.kushtaka.ai").unwrap();
+    let s = split_record_name("_acme-challenge.api.dashboard.example.com").unwrap();
     assert_eq!(s.subdomain, "_acme-challenge.api.dashboard");
-    assert_eq!(s.sld, "kushtaka");
-    assert_eq!(s.tld, "ai");
+    assert_eq!(s.sld, "example");
+    assert_eq!(s.tld, "com");
   }
 
   #[test]
@@ -239,9 +239,9 @@ mod tests {
     let body = r#"<?xml version="1.0"?>
 <ApiResponse Status="OK">
   <CommandResponse>
-    <DomainDNSGetHostsResult Domain="kushtaka.ai" IsUsingOurDNS="true">
+    <DomainDNSGetHostsResult Domain="example.com" IsUsingOurDNS="true">
       <host HostId="1" Name="@" Type="A" Address="66.223.140.2" MXPref="10" TTL="1800"/>
-      <host HostId="2" Name="www" Type="CNAME" Address="kushtaka.ai." MXPref="10" TTL="1800"/>
+      <host HostId="2" Name="www" Type="CNAME" Address="example.com." MXPref="10" TTL="1800"/>
       <host HostId="3" Name="_existing" Type="TXT" Address="abc123" MXPref="10" TTL="60"/>
     </DomainDNSGetHostsResult>
   </CommandResponse>
