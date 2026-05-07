@@ -18,7 +18,7 @@ daemon:
 namecheap:
   api_key_file: /etc/rota/secrets/namecheap-api.key
   username: your-namecheap-username
-  client_ip: 1.2.3.4
+  client_ip: 192.0.2.1
 
 certs:
   - id: example-public

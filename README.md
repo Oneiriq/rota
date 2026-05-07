@@ -78,6 +78,10 @@ v0.0.0. The trait surface, config schema, CLI/daemon skeletons, Namecheap CA + r
 - v0.4: Kubernetes Secret + nginx reload + HAProxy install backends.
 - v0.5: HTTP-01 DCV strategy, multi-host federation.
 
+## A note on logging
+
+rota redacts known auth patterns (`ApiKey=`, `password=`, `Bearer `, etc.) from any error string before it lands in a log line or the audit DB. That said, some Rust HTTP-client crates can emit the full request URL at TRACE level, and Namecheap's API carries auth in the URL query string. Don't enable `RUST_LOG=reqwest=trace` (or any `*=trace` that captures the network layer) on a production rotad instance. The default `info` level is fine.
+
 ## License
 
 Apache 2.0. See [LICENSE](./LICENSE).

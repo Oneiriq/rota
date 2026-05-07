@@ -26,14 +26,23 @@ pub struct SqliteAuditStore {
 
 impl SqliteAuditStore {
   /// Open or create the audit DB at `path` and apply migrations.
+  ///
+  /// The parent directory is created with mode 0700 and the DB file
+  /// itself is chmodded to 0600 if it didn't already exist or was
+  /// world-readable. The audit log carries renewal history and any
+  /// error strings the renewer recorded; treating it like a private
+  /// key file is the right default.
   pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
     let path = path.as_ref().to_owned();
     let conn = tokio::task::spawn_blocking(move || -> Result<Connection> {
+      use std::os::unix::fs::PermissionsExt;
       if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
           .map_err(|e| Error::Install(format!("audit dir {}: {e}", parent.display())))?;
+        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
       }
       let conn = Connection::open(&path).map_err(map_err)?;
+      let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
       schema::apply(&conn)?;
       Ok(conn)
     })

@@ -229,7 +229,7 @@ mod tests {
     assert_eq!(cert.domains, vec!["example.com", "www.example.com"]);
     let nc = cfg.namecheap.expect("example uses namecheap");
     assert_eq!(nc.username, "your-namecheap-username");
-    assert_eq!(nc.client_ip, "1.2.3.4");
+    assert_eq!(nc.client_ip, "192.0.2.1");
     match cert.ca {
       CaSpec::Namecheap { ssl_id } => assert_eq!(ssl_id, 12345678),
     }

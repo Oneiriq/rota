@@ -17,6 +17,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rcgen::{CertificateParams, KeyPair};
+use rota_core::secrets::redact;
 use rota_core::Result;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -54,7 +55,12 @@ impl CertRenewer {
         Ok(())
       }
       Err(err) => {
-        let msg = err.to_string();
+        // Defence in depth: even though backend error mappers strip
+        // known patterns at their boundary, redact here too before
+        // the message lands in the audit DB or a log line. Any
+        // future error type that wraps a raw HTTP-client error
+        // could otherwise round-trip a secret.
+        let msg = redact(&err.to_string());
         let _ = self
           .audit
           .append_event(&renewal_id, EventKind::Error, Some(&msg))
