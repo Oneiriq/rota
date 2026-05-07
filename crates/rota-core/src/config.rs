@@ -215,4 +215,31 @@ certs: []
     assert!(cfg.namecheap.is_none());
     assert!(cfg.certs.is_empty());
   }
+
+  #[test]
+  fn parses_filesystem_install_variant() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: oneiriq-public
+    domains: [oneiriq.com]
+    key_path: /tmp/oneiriq.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    registrar: { kind: namecheap }
+    install:
+      kind: filesystem
+      directory: /etc/ssl/oneiriq
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    let cert = &cfg.certs[0];
+    match &cert.install {
+      InstallSpec::Filesystem { directory } => {
+        assert_eq!(directory, &PathBuf::from("/etc/ssl/oneiriq"));
+      }
+      _ => panic!("expected filesystem install"),
+    }
+  }
 }
