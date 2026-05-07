@@ -1,90 +1,30 @@
-//! Async-friendly handle to the audit DB.
+//! SQLite-backed audit store.
 //!
 //! Wraps `rusqlite::Connection` in a `Mutex` and runs every call
 //! through `spawn_blocking`. Renewals are infrequent (hourly at most
 //! in real deployments) so the contention is negligible; what we
 //! care about is that no SQL call ever blocks the tokio runtime.
+//! Default backend in rota.yaml: zero-config, single-file, no
+//! external service to provision.
 
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rota_core::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use super::schema;
-
-/// Lifecycle status of a single renewal attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenewalStatus {
-  InProgress,
-  Success,
-  Failed,
-}
-
-impl RenewalStatus {
-  fn as_str(&self) -> &'static str {
-    match self {
-      Self::InProgress => "in_progress",
-      Self::Success => "success",
-      Self::Failed => "failed",
-    }
-  }
-
-  fn parse(s: &str) -> Self {
-    match s {
-      "success" => Self::Success,
-      "failed" => Self::Failed,
-      _ => Self::InProgress,
-    }
-  }
-}
-
-/// Discrete steps the renewal pipeline emits as it progresses.
-/// Adding a new step is a new variant plus an arm in `as_str`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventKind {
-  CsrGenerated,
-  CaSubmitted,
-  DcvPublished,
-  CertIssued,
-  CertInstalled,
-  DcvRemoved,
-  Error,
-}
-
-impl EventKind {
-  pub fn as_str(&self) -> &'static str {
-    match self {
-      Self::CsrGenerated => "csr_generated",
-      Self::CaSubmitted => "ca_submitted",
-      Self::DcvPublished => "dcv_published",
-      Self::CertIssued => "cert_issued",
-      Self::CertInstalled => "cert_installed",
-      Self::DcvRemoved => "dcv_removed",
-      Self::Error => "error",
-    }
-  }
-}
-
-/// One row of the `renewal` table, hydrated.
-#[derive(Debug, Clone)]
-pub struct RenewalRecord {
-  pub id: i64,
-  pub cert_id: String,
-  pub started_at: DateTime<Utc>,
-  pub completed_at: Option<DateTime<Utc>>,
-  pub status: RenewalStatus,
-  pub error: Option<String>,
-}
+use super::types::{AuditStore, EventKind, RenewalId, RenewalRecord, RenewalStatus};
 
 #[derive(Clone)]
-pub struct AuditStore {
+pub struct SqliteAuditStore {
   inner: Arc<Mutex<Connection>>,
 }
 
-impl AuditStore {
+impl SqliteAuditStore {
   /// Open or create the audit DB at `path` and apply migrations.
   pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
     let path = path.as_ref().to_owned();
@@ -118,9 +58,28 @@ impl AuditStore {
     })
   }
 
-  /// Open a new renewal row in `in_progress` state. Returns the row
-  /// id the caller threads through subsequent event/complete calls.
-  pub async fn start_renewal(&self, cert_id: &str) -> Result<i64> {
+  async fn with_conn<F, T>(&self, f: F) -> Result<T>
+  where
+    F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    T: Send + 'static,
+  {
+    let inner = Arc::clone(&self.inner);
+    tokio::task::spawn_blocking(move || {
+      let conn = inner.blocking_lock();
+      f(&conn)
+    })
+    .await
+    .map_err(|e| Error::Install(format!("audit join: {e}")))?
+  }
+}
+
+#[async_trait]
+impl AuditStore for SqliteAuditStore {
+  fn name(&self) -> &str {
+    "sqlite"
+  }
+
+  async fn start_renewal(&self, cert_id: &str) -> Result<RenewalId> {
     let cert_id = cert_id.to_owned();
     let now = Utc::now();
     self
@@ -134,25 +93,26 @@ impl AuditStore {
           ],
         )
         .map_err(map_err)?;
-        Ok(c.last_insert_rowid())
+        Ok(RenewalId(c.last_insert_rowid().to_string()))
       })
       .await
   }
 
-  /// Append a step event to a renewal.
-  pub async fn append_event(
+  async fn append_event(
     &self,
-    renewal_id: i64,
+    renewal_id: &RenewalId,
     kind: EventKind,
     detail: Option<&str>,
   ) -> Result<()> {
+    let id_i64 = parse_rowid(renewal_id)?;
     let detail = detail.map(str::to_owned);
+    let kind_str = kind.as_str();
     let now = Utc::now();
     self
       .with_conn(move |c| {
         c.execute(
           "INSERT INTO renewal_event(renewal_id, ts, kind, detail) VALUES (?1, ?2, ?3, ?4)",
-          rusqlite::params![renewal_id, now.to_rfc3339(), kind.as_str(), detail],
+          rusqlite::params![id_i64, now.to_rfc3339(), kind_str, detail],
         )
         .map_err(map_err)?;
         Ok(())
@@ -160,21 +120,21 @@ impl AuditStore {
       .await
   }
 
-  /// Mark a renewal complete. `error` carries a redacted message on
-  /// failure; for success pass `None`.
-  pub async fn complete_renewal(
+  async fn complete_renewal(
     &self,
-    renewal_id: i64,
+    renewal_id: &RenewalId,
     status: RenewalStatus,
     error: Option<&str>,
   ) -> Result<()> {
+    let id_i64 = parse_rowid(renewal_id)?;
     let error = error.map(str::to_owned);
+    let status_str = status.as_str();
     let now = Utc::now();
     self
       .with_conn(move |c| {
         c.execute(
           "UPDATE renewal SET completed_at = ?1, status = ?2, error = ?3 WHERE id = ?4",
-          rusqlite::params![now.to_rfc3339(), status.as_str(), error, renewal_id],
+          rusqlite::params![now.to_rfc3339(), status_str, error, id_i64],
         )
         .map_err(map_err)?;
         Ok(())
@@ -182,8 +142,7 @@ impl AuditStore {
       .await
   }
 
-  /// Look up the most recent renewal for a cert id (any status).
-  pub async fn latest_renewal(&self, cert_id: &str) -> Result<Option<RenewalRecord>> {
+  async fn latest_renewal(&self, cert_id: &str) -> Result<Option<RenewalRecord>> {
     let cert_id = cert_id.to_owned();
     self
       .with_conn(move |c| {
@@ -202,9 +161,7 @@ impl AuditStore {
       .await
   }
 
-  /// Count of renewals for a cert id at each terminal status. Used
-  /// by tests; exposed for the dashboard sidebar later.
-  pub async fn count_by_status(&self, cert_id: &str) -> Result<(usize, usize)> {
+  async fn count_by_status(&self, cert_id: &str) -> Result<(usize, usize)> {
     let cert_id = cert_id.to_owned();
     self
       .with_conn(move |c| {
@@ -226,28 +183,21 @@ impl AuditStore {
       })
       .await
   }
+}
 
-  async fn with_conn<F, T>(&self, f: F) -> Result<T>
-  where
-    F: FnOnce(&Connection) -> Result<T> + Send + 'static,
-    T: Send + 'static,
-  {
-    let inner = Arc::clone(&self.inner);
-    tokio::task::spawn_blocking(move || {
-      let conn = inner.blocking_lock();
-      f(&conn)
-    })
-    .await
-    .map_err(|e| Error::Install(format!("audit join: {e}")))?
-  }
+fn parse_rowid(id: &RenewalId) -> Result<i64> {
+  id.0
+    .parse()
+    .map_err(|_| Error::Install(format!("invalid sqlite renewal id: {}", id.0)))
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenewalRecord> {
   let started: String = row.get(2)?;
   let completed: Option<String> = row.get(3)?;
   let status: String = row.get(4)?;
+  let id: i64 = row.get(0)?;
   Ok(RenewalRecord {
-    id: row.get(0)?,
+    id: RenewalId(id.to_string()),
     cert_id: row.get(1)?,
     started_at: parse_ts(&started),
     completed_at: completed.as_deref().map(parse_ts),

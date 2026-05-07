@@ -22,54 +22,54 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{info, warn};
 
-use crate::audit::{AuditStore, EventKind, RenewalStatus};
+use crate::audit::{AuditStore, EventKind, RenewalId, RenewalStatus};
 use crate::backends::CertBackends;
 
 const KEY_FILE_MODE: u32 = 0o600;
 
 /// Drives one cert's renewal through every backend step.
 pub struct CertRenewer {
-  audit: Arc<AuditStore>,
+  audit: Arc<dyn AuditStore>,
 }
 
 impl CertRenewer {
-  pub fn new(audit: Arc<AuditStore>) -> Self {
+  pub fn new(audit: Arc<dyn AuditStore>) -> Self {
     Self { audit }
   }
 
   /// Run the full pipeline for one cert. Records start, every
   /// pipeline step, and a terminal status (success/failed) in the
-  /// audit DB.
+  /// audit log.
   pub async fn run(&self, bundle: &CertBackends) -> Result<()> {
     let renewal_id = self.audit.start_renewal(&bundle.config.id).await?;
-    info!(cert = %bundle.config.id, renewal_id, "renewal started");
+    info!(cert = %bundle.config.id, renewal_id = %renewal_id.as_str(), "renewal started");
 
-    match self.run_pipeline(bundle, renewal_id).await {
+    match self.run_pipeline(bundle, &renewal_id).await {
       Ok(()) => {
         self
           .audit
-          .complete_renewal(renewal_id, RenewalStatus::Success, None)
+          .complete_renewal(&renewal_id, RenewalStatus::Success, None)
           .await?;
-        info!(cert = %bundle.config.id, renewal_id, "renewal succeeded");
+        info!(cert = %bundle.config.id, renewal_id = %renewal_id.as_str(), "renewal succeeded");
         Ok(())
       }
       Err(err) => {
         let msg = err.to_string();
         let _ = self
           .audit
-          .append_event(renewal_id, EventKind::Error, Some(&msg))
+          .append_event(&renewal_id, EventKind::Error, Some(&msg))
           .await;
         let _ = self
           .audit
-          .complete_renewal(renewal_id, RenewalStatus::Failed, Some(&msg))
+          .complete_renewal(&renewal_id, RenewalStatus::Failed, Some(&msg))
           .await;
-        warn!(cert = %bundle.config.id, renewal_id, error = %msg, "renewal failed");
+        warn!(cert = %bundle.config.id, renewal_id = %renewal_id.as_str(), error = %msg, "renewal failed");
         Err(err)
       }
     }
   }
 
-  async fn run_pipeline(&self, bundle: &CertBackends, renewal_id: i64) -> Result<()> {
+  async fn run_pipeline(&self, bundle: &CertBackends, renewal_id: &RenewalId) -> Result<()> {
     let private_key_pem = load_or_create_key(&bundle.config.key_path).await?;
 
     let csr_pem = generate_csr(&bundle.config.domains, &private_key_pem)?;

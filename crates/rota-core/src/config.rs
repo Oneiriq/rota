@@ -16,6 +16,10 @@ use crate::{Error, Result};
 pub struct RotaConfig {
   #[serde(default)]
   pub daemon: DaemonConfig,
+  /// Audit log backend selector. Defaults to SQLite at
+  /// `daemon.database_path` if omitted.
+  #[serde(default)]
+  pub audit: Option<AuditSpec>,
   /// Account-wide Namecheap credentials. The CA + registrar backends
   /// share a single API key + username + whitelisted client IP, so
   /// the creds live at the top of the config rather than duplicated
@@ -117,6 +121,36 @@ pub struct NamecheapAccount {
   /// Outbound IP the daemon presents when calling the API. Must be
   /// listed under the account's "Whitelisted IPs" in Namecheap.
   pub client_ip: String,
+}
+
+/// Audit log backend selector. SQLite is the default if the
+/// top-level `audit:` block is omitted; rota's own daemon owns the
+/// SQLite file with no external service to provision. SurrealDB is
+/// available for operators who already run a SurrealDB instance and
+/// want renewal history queryable alongside the rest of their data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuditSpec {
+  /// Single-file SQLite at the given path. Defaults to
+  /// `daemon.database_path` when this block is omitted.
+  Sqlite {
+    #[serde(default)]
+    path: Option<PathBuf>,
+  },
+  /// SurrealDB at the given endpoint. Endpoint accepts every form
+  /// surql-rs accepts: `mem://` and `memory://` for embedded
+  /// in-memory; `file://path` for embedded persistent; `ws://`,
+  /// `wss://`, `http://`, `https://` for remote. Auth fields are
+  /// optional for embedded engines.
+  Surrealdb {
+    endpoint: String,
+    namespace: String,
+    database: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password_file: Option<PathBuf>,
+  },
 }
 
 /// CA-backend selector. Each variant carries the backend-specific

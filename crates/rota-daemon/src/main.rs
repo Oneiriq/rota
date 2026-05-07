@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use rota_core::config::RotaConfig;
-use rota_daemon::audit::AuditStore;
+use rota_core::config::{AuditSpec, RotaConfig};
+use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
 use rota_daemon::renewer::CertRenewer;
 use tracing::info;
@@ -56,11 +56,8 @@ async fn main() -> Result<()> {
     );
   }
 
-  let audit = Arc::new(AuditStore::open(&config.daemon.database_path).await?);
-  info!(
-    db = %config.daemon.database_path.display(),
-    "audit store ready"
-  );
+  let audit = build_audit(&config).await?;
+  info!(backend = %audit.name(), "audit store ready");
 
   let _renewer = CertRenewer::new(Arc::clone(&audit));
 
@@ -70,4 +67,30 @@ async fn main() -> Result<()> {
   // socket and the dashboard HTTP listener.
   drop(bundles);
   Ok(())
+}
+
+async fn build_audit(config: &RotaConfig) -> Result<Arc<dyn AuditStore>> {
+  match &config.audit {
+    None => {
+      let store = SqliteAuditStore::open(&config.daemon.database_path).await?;
+      Ok(Arc::new(store))
+    }
+    Some(AuditSpec::Sqlite { path }) => {
+      let path = path.clone().unwrap_or_else(|| config.daemon.database_path.clone());
+      let store = SqliteAuditStore::open(&path).await?;
+      Ok(Arc::new(store))
+    }
+    #[cfg(feature = "surrealdb")]
+    Some(AuditSpec::Surrealdb { .. }) => {
+      let store = rota_daemon::audit::SurrealAuditStore::from_spec(
+        config.audit.as_ref().expect("matched Surrealdb above"),
+      )
+      .await?;
+      Ok(Arc::new(store))
+    }
+    #[cfg(not(feature = "surrealdb"))]
+    Some(AuditSpec::Surrealdb { .. }) => Err(anyhow::anyhow!(
+      "config selects surrealdb audit backend but rota-daemon was built without the `surrealdb` feature"
+    )),
+  }
 }
