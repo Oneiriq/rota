@@ -7,6 +7,8 @@
 //! impls the relevant trait and an arm in [`build_ca`] /
 //! [`build_registrar`] / [`build_install`].
 
+pub mod dsm;
+pub mod filesystem;
 pub mod namecheap;
 
 use std::sync::Arc;
@@ -17,6 +19,8 @@ use rota_core::config::{
 };
 use rota_core::{Error, Result};
 
+use dsm::DsmInstall;
+use filesystem::FilesystemInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
 
 /// All backends bound to one `CertConfig`. Owns the lifetime of the
@@ -45,7 +49,7 @@ pub fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
   for cert in &config.certs {
     let ca = build_ca(&cert.ca, namecheap_client.as_ref())?;
     let registrar = build_registrar(&cert.registrar, namecheap_client.as_ref())?;
-    let install = build_install(&cert.install)?;
+    let install = build_install(&cert.install, cert)?;
     bundles.push(CertBackends {
       config: cert.clone(),
       ca,
@@ -110,10 +114,12 @@ fn build_registrar(
   }
 }
 
-fn build_install(_spec: &InstallSpec) -> Result<Option<Arc<dyn InstallBackend>>> {
-  // DSM + filesystem install backends land in the next PR. Returning
-  // `None` here lets the scheduler skip the install step until the
-  // backends exist; the cert table still reads correctly so the
-  // dashboard PR can ship in parallel.
-  Ok(None)
+fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn InstallBackend>>> {
+  match spec {
+    InstallSpec::Dsm { description } => Ok(Some(Arc::new(DsmInstall::new(description.clone())))),
+    InstallSpec::Filesystem { directory } => Ok(Some(Arc::new(FilesystemInstall::new(
+      directory.clone(),
+      cert.id.clone(),
+    )))),
+  }
 }
