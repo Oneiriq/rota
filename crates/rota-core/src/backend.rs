@@ -85,4 +85,15 @@ pub trait InstallBackend: Send + Sync {
     private_key_pem: &str,
     domains: &[String],
   ) -> Result<()>;
+
+  /// Read back the currently-installed leaf cert as PEM if the
+  /// backend can introspect what it wrote, or `Ok(None)` if the
+  /// backend is write-only or has no cert installed yet.
+  ///
+  /// Used by the scheduler to compute days-until-expiry against the
+  /// configured renewal threshold. Default returns `None` so backends
+  /// don't have to opt in until they're ready.
+  async fn current_cert_pem(&self, _cert_id: &str) -> Result<Option<String>> {
+    Ok(None)
+  }
 }
