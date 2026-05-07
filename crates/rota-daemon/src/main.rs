@@ -3,17 +3,18 @@
 //! Owns scheduling, audit history, CA/registrar/install dispatch.
 //! CLI clients talk to it over a UNIX socket; the dashboard is served
 //! at the configured `listen_addr`. Renewal pipeline wiring is staged
-//! across PRs; v0.0.0 wired the trait surface, this build adds the
-//! Namecheap CA + registrar implementations and the config-to-trait-
-//! object dispatch the scheduler will drive.
-
-mod backends;
+//! across PRs. Current build wires the audit DB and the renewer; the
+//! scheduler loop, CLI socket, and dashboard land in follow-ups.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
 use rota_core::config::RotaConfig;
+use rota_daemon::audit::AuditStore;
+use rota_daemon::backends;
+use rota_daemon::renewer::CertRenewer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -55,8 +56,18 @@ async fn main() -> Result<()> {
     );
   }
 
-  // v0.1: spawn scheduler loop, bind UNIX socket for CLI, bind HTTP
-  // for dashboard, attach SQLite audit DB. The trait surface in
-  // rota-core::backend drives all of it.
+  let audit = Arc::new(AuditStore::open(&config.daemon.database_path).await?);
+  info!(
+    db = %config.daemon.database_path.display(),
+    "audit store ready"
+  );
+
+  let _renewer = CertRenewer::new(Arc::clone(&audit));
+
+  // Next PR: drive `_renewer` from a scheduler loop that ticks every
+  // `check_interval_seconds` and decides which bundles in `bundles`
+  // are within `renew_threshold_days` of expiry. Then bind the CLI
+  // socket and the dashboard HTTP listener.
+  drop(bundles);
   Ok(())
 }

@@ -9,6 +9,10 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lib]
+name = "rota_daemon"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rotad"
 path = "src/main.rs"
