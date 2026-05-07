@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
@@ -15,6 +16,7 @@ use rota_core::config::{AuditSpec, RotaConfig};
 use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
 use rota_daemon::renewer::CertRenewer;
+use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -59,13 +61,29 @@ async fn main() -> Result<()> {
   let audit = build_audit(&config).await?;
   info!(backend = %audit.name(), "audit store ready");
 
-  let _renewer = CertRenewer::new(Arc::clone(&audit));
+  let renewer = Arc::new(CertRenewer::new(Arc::clone(&audit)));
+  let bundles = Arc::new(bundles);
 
-  // Next PR: drive `_renewer` from a scheduler loop that ticks every
-  // `check_interval_seconds` and decides which bundles in `bundles`
-  // are within `renew_threshold_days` of expiry. Then bind the CLI
-  // socket and the dashboard HTTP listener.
-  drop(bundles);
+  let interval = Duration::from_secs(config.daemon.check_interval_seconds);
+  let scheduler = Scheduler::new(
+    Arc::clone(&bundles),
+    Arc::clone(&renewer),
+    SchedulerConfig {
+      check_interval: interval,
+      threshold_days: config.daemon.renew_threshold_days as i64,
+      // Failure cooldown matches the natural sweep cadence: a
+      // failed renewal will not retry until the next interval has
+      // elapsed. v0.2 can swap in exponential backoff if it shows
+      // up as a real-world problem.
+      failure_cooldown: interval,
+    },
+  );
+
+  // Next PR: bind the CLI UNIX socket and the dashboard HTTP
+  // listener as their own tasks alongside the scheduler. For now
+  // the scheduler is the only long-running task and we just await
+  // it; SIGINT exits the process.
+  scheduler.run().await;
   Ok(())
 }
 

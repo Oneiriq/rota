@@ -54,4 +54,5 @@ tracing-subscriber = { workspace = true }
 # engine is feature-gated inside the surrealdb crate, so the test
 # binary opts in here without bloating the production rotad build.
 surrealdb = { version = "3.0", default-features = false, features = ["protocol-ws", "kv-mem"] }
+time = { workspace = true }
 
