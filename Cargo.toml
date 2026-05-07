@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 license = "Apache-2.0"
 authors = ["Shon Thomas <shon@oneiriq.com>"]
 repository = "https://github.com/Oneiriq/rota"
@@ -35,6 +35,8 @@ tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+oneiriq-surql = { version = "0.2", default-features = false, features = ["client-rustls"] }
+futures = "0.3"
 
 [profile.release]
 lto = "thin"

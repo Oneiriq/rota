@@ -1,18 +1,30 @@
-//! SQLite-backed audit log for renewal pipelines.
+//! Audit log surface for renewal pipelines.
 //!
-//! Every renewal opens a row in `renewal` and appends events to
-//! `renewal_event` as it walks the CSR / DCV / issuance / install
-//! steps. The store is the source of truth the dashboard reads from
-//! and the operator can grep when something goes wrong.
+//! The trait `AuditStore` defines the verbs every backend implements:
+//! open a renewal row, append step events as the pipeline walks, mark
+//! it complete with a status. Two impls ship today:
 //!
-//! Connection access is wrapped in `spawn_blocking` so the rest of
-//! the daemon (axum, scheduler) stays on the tokio runtime without
-//! blocking workers on disk I/O.
+//! - [`SqliteAuditStore`]: zero-config single-file SQLite via
+//!   `rusqlite` + `spawn_blocking`. Default for OSS portability;
+//!   nothing to provision, the daemon owns the file.
+//! - [`SurrealAuditStore`]: SurrealDB via the `surql` (oneiriq-surql)
+//!   crate. Native record-id schema, queryable from the same DB
+//!   self-hosters may already run for adjacent projects.
+//!
+//! Pick at config-load time via the top-level `audit:` block in
+//! `rota.yaml`; the rest of the daemon holds an `Arc<dyn AuditStore>`
+//! and doesn't care which backend is wired underneath.
 
 mod schema;
-mod store;
+mod sqlite;
+#[cfg(feature = "surrealdb")]
+mod surrealdb;
+mod types;
 
-pub use store::{AuditStore, EventKind, RenewalRecord, RenewalStatus};
+pub use sqlite::SqliteAuditStore;
+#[cfg(feature = "surrealdb")]
+pub use surrealdb::SurrealAuditStore;
+pub use types::{AuditStore, EventKind, RenewalId, RenewalRecord, RenewalStatus};
 
 #[cfg(test)]
 mod tests;

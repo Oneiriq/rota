@@ -8,8 +8,12 @@ use rota_core::config::{CaSpec, CertConfig, InstallSpec, RegistrarSpec};
 use rota_core::Result;
 
 use super::*;
-use crate::audit::AuditStore;
+use crate::audit::{AuditStore, SqliteAuditStore};
 use crate::backends::CertBackends;
+
+async fn open_audit() -> Arc<dyn AuditStore> {
+  Arc::new(SqliteAuditStore::open_in_memory().await.unwrap())
+}
 
 #[derive(Default)]
 struct MockCa {
@@ -110,7 +114,7 @@ fn bundle(
 
 #[tokio::test]
 async fn happy_path_runs_every_step_and_audits_success() {
-  let audit = Arc::new(AuditStore::open_in_memory().await.unwrap());
+  let audit = open_audit().await;
   let renewer = CertRenewer::new(Arc::clone(&audit));
   let tmp = tempfile::tempdir().unwrap();
 
@@ -144,7 +148,7 @@ async fn happy_path_runs_every_step_and_audits_success() {
 
 #[tokio::test]
 async fn ca_failure_still_removes_dcv_and_records_failure() {
-  let audit = Arc::new(AuditStore::open_in_memory().await.unwrap());
+  let audit = open_audit().await;
   let renewer = CertRenewer::new(Arc::clone(&audit));
   let tmp = tempfile::tempdir().unwrap();
 
@@ -177,7 +181,7 @@ async fn ca_failure_still_removes_dcv_and_records_failure() {
 
 #[tokio::test]
 async fn reuses_existing_key_on_disk() {
-  let audit = Arc::new(AuditStore::open_in_memory().await.unwrap());
+  let audit = open_audit().await;
   let renewer = CertRenewer::new(Arc::clone(&audit));
   let tmp = tempfile::tempdir().unwrap();
   let key_path = tmp.path().join("persistent.key");
@@ -214,7 +218,7 @@ async fn reuses_existing_key_on_disk() {
 
 #[tokio::test]
 async fn install_skipped_when_no_install_backend() {
-  let audit = Arc::new(AuditStore::open_in_memory().await.unwrap());
+  let audit = open_audit().await;
   let renewer = CertRenewer::new(Arc::clone(&audit));
   let tmp = tempfile::tempdir().unwrap();
 
