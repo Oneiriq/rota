@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Local config / secrets — never commit
+/rota.yaml
+/.rota/
+*.key
+*.csr
+*.pem
+*.crt
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
