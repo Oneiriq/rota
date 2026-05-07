@@ -15,7 +15,12 @@ use tracing_subscriber::EnvFilter;
 #[command(name = "rota", about = "rota CLI", version)]
 struct Args {
   /// Path to rota.yaml.
-  #[arg(short, long, env = "ROTA_CONFIG", default_value = "/etc/rota/rota.yaml")]
+  #[arg(
+    short,
+    long,
+    env = "ROTA_CONFIG",
+    default_value = "/etc/rota/rota.yaml"
+  )]
   config: PathBuf,
 
   #[command(subcommand)]

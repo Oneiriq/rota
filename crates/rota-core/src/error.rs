@@ -12,6 +12,9 @@ pub enum Error {
   #[error("config parse error in {path}: {message}")]
   ConfigParse { path: PathBuf, message: String },
 
+  #[error("config invalid: {0}")]
+  ConfigInvalid(String),
+
   #[error("cert {id} not found in config")]
   CertNotFound { id: String },
 

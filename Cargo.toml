@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Shon Thomas <shon@oneiriq.com>"]
 repository = "https://github.com/Oneiriq/rota"
@@ -22,6 +22,7 @@ axum = { version = "0.7", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 maud = { version = "0.26", features = ["axum"] }
+quick-xml = { version = "0.36", features = ["serialize"] }
 rcgen = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 rusqlite = { version = "0.31", features = ["bundled"] }

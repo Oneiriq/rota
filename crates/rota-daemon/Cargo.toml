@@ -22,6 +22,8 @@ axum = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 maud = { workspace = true }
+quick-xml = { workspace = true }
+rcgen = { workspace = true }
 reqwest = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
