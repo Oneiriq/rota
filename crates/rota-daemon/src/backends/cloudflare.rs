@@ -1,13 +1,13 @@
-//! Cloudflare DNS registrar backend (v4 API, Bearer-token auth).
+//! Cloudflare DNS-01 DCV backend (v4 API, Bearer-token auth).
 //!
-//! Three steps per `publish_txt`:
+//! Three steps per `publish`:
 //!
 //! 1. Resolve the apex zone for the record name (`_acme-challenge.x.example.com` -> zone `example.com`).
 //! 2. Look for an existing TXT record with the same name + value to
-//!    keep `publish_txt` idempotent (matches the trait contract).
+//!    keep `publish` idempotent (matches the trait contract).
 //! 3. POST the record if absent.
 //!
-//! `remove_txt` mirrors the lookup + delete shape. Unlike Namecheap,
+//! `remove` mirrors the lookup + delete shape. Unlike Namecheap,
 //! Cloudflare is per-record edit, so we don't have to read every
 //! record on the zone first; the get-merge-set pattern is namecheap
 //! specific.
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
-use rota_core::backend::{DcvChallenge, RegistrarBackend};
+use rota_core::backend::{ChallengeKind, DcvBackend, DcvChallenge};
 use rota_core::secrets::redact;
 use rota_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -152,52 +152,80 @@ async fn decode_response<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) 
 }
 
 #[derive(Debug, Clone)]
-pub struct CloudflareRegistrar {
+pub struct CloudflareDcv {
   client: Arc<CloudflareClient>,
 }
 
-impl CloudflareRegistrar {
+impl CloudflareDcv {
   pub fn new(client: Arc<CloudflareClient>) -> Self {
     Self { client }
   }
 }
 
+const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01];
+
 #[async_trait]
-impl RegistrarBackend for CloudflareRegistrar {
+impl DcvBackend for CloudflareDcv {
   fn name(&self) -> &str {
     "cloudflare"
   }
 
-  async fn publish_txt(&self, challenge: &DcvChallenge) -> Result<()> {
-    let zone_id = self.find_zone_id(&challenge.record_name).await?;
+  fn supported_kinds(&self) -> &[ChallengeKind] {
+    SUPPORTED
+  }
+
+  async fn publish(&self, challenge: &DcvChallenge) -> Result<()> {
+    let DcvChallenge::Dns01 {
+      record_name,
+      record_value,
+      ttl,
+    } = challenge
+    else {
+      return Err(Error::Registrar(format!(
+        "cloudflare dcv only supports dns-01, got {}",
+        challenge.kind_str()
+      )));
+    };
+    let zone_id = self.find_zone_id(record_name).await?;
 
     if self
-      .find_matching_record(&zone_id, &challenge.record_name, &challenge.record_value)
+      .find_matching_record(&zone_id, record_name, record_value)
       .await?
       .is_some()
     {
-      debug!(record = %challenge.record_name, "cloudflare txt already present");
+      debug!(record = %record_name, "cloudflare txt already present");
       return Ok(());
     }
 
     let body = json!({
       "type": "TXT",
-      "name": challenge.record_name,
-      "content": challenge.record_value,
-      "ttl": challenge.ttl.max(TXT_TTL_FALLBACK),
+      "name": record_name,
+      "content": record_value,
+      "ttl": (*ttl).max(TXT_TTL_FALLBACK),
     });
     let _: DnsRecordResponse = self
       .client
       .post(&format!("/zones/{zone_id}/dns_records"), body)
       .await?;
-    info!(record = %challenge.record_name, "cloudflare publishing dcv txt");
+    info!(record = %record_name, "cloudflare publishing dcv txt");
     Ok(())
   }
 
-  async fn remove_txt(&self, challenge: &DcvChallenge) -> Result<()> {
-    let zone_id = self.find_zone_id(&challenge.record_name).await?;
+  async fn remove(&self, challenge: &DcvChallenge) -> Result<()> {
+    let DcvChallenge::Dns01 {
+      record_name,
+      record_value,
+      ..
+    } = challenge
+    else {
+      return Err(Error::Registrar(format!(
+        "cloudflare dcv only supports dns-01, got {}",
+        challenge.kind_str()
+      )));
+    };
+    let zone_id = self.find_zone_id(record_name).await?;
     let Some(record_id) = self
-      .find_matching_record(&zone_id, &challenge.record_name, &challenge.record_value)
+      .find_matching_record(&zone_id, record_name, record_value)
       .await?
     else {
       // Idempotent: nothing to delete.
@@ -207,12 +235,12 @@ impl RegistrarBackend for CloudflareRegistrar {
       .client
       .delete(&format!("/zones/{zone_id}/dns_records/{record_id}"))
       .await?;
-    info!(record = %challenge.record_name, "cloudflare removed dcv txt");
+    info!(record = %record_name, "cloudflare removed dcv txt");
     Ok(())
   }
 }
 
-impl CloudflareRegistrar {
+impl CloudflareDcv {
   /// Walk down the FQDN labels until Cloudflare reports a zone for
   /// the prefix. `_acme-challenge.api.example.com` tries
   /// `_acme-challenge.api.example.com`, then `api.example.com`,

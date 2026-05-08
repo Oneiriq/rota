@@ -46,12 +46,12 @@ Dashboard ──── HTTP ─────▶
 (htmx + SSR)   WS                │   │   │
                           ┌──────┘   │   └──────┐
                           ▼          ▼          ▼
-                        CABackend Registrar Install
-                                  Backend   Backend
+                        CABackend  DCV       Install
+                                   Backend   Backend
 
-                        Namecheap Namecheap DSM (Synology)
-                        (more)    (more)    Filesystem
-                                            (more)
+                        Namecheap  Namecheap DSM (Synology)
+                        ACME       Cloudflare Filesystem
+                        (more)     (more)    nginx, HAProxy, K8s
 ```
 
 Daemon, CLI, and dashboard all build from one Cargo workspace and ship as a single binary. No Node, no Deno, no npm. `cargo install rota` and you have everything.
@@ -60,9 +60,9 @@ Daemon, CLI, and dashboard all build from one Cargo workspace and ship as a sing
 
 Three trait surfaces decouple the renewal pipeline from any one vendor:
 
-- **`CABackend`**: issues certs. v0.1 ships with Namecheap (traditional reissue API). Roadmap: Let's Encrypt via ACME, Sectigo direct, ZeroSSL, GoDaddy.
-- **`RegistrarBackend`**: completes DNS-01 DCV by writing TXT records. v0.1 ships with Namecheap. Roadmap: Cloudflare, Route 53, DigitalOcean, Porkbun.
-- **`InstallBackend`**: drops issued cert + chain where the system serving the domain can read them. v0.1 ships with DSM (Synology) via `synowebapi` and a plain filesystem target. Roadmap: Kubernetes Secret, nginx reload, HAProxy CLI.
+- **`CABackend`**: issues certs. Ships with Namecheap (traditional reissue) and ACME (Let's Encrypt, ZeroSSL with EAB, BuyPass, any RFC 8555 directory). Roadmap: Sectigo direct, GoDaddy.
+- **`DcvBackend`**: satisfies the CA's domain-control challenge. DNS-01 solvers ship for Namecheap and Cloudflare. HTTP-01 solver lands in v0.6. Roadmap: Route 53, DigitalOcean, Porkbun.
+- **`InstallBackend`**: drops issued cert + chain where the system serving the domain can read them. Ships with DSM (Synology) via `synowebapi`, plain filesystem, nginx reload, HAProxy runtime API hot-swap, and Kubernetes Secret.
 
 Each entry in `rota.yaml` picks one of each, so a mixed fleet runs through the same pipeline. Adding a new vendor is one trait impl, not a fork of the renewal logic.
 

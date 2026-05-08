@@ -12,6 +12,7 @@
 //! typically point at a `ws://` or `wss://` endpoint.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -21,12 +22,14 @@ use serde_json::{json, Value};
 use surql::connection::auth::RootCredentials;
 use surql::connection::{ConnectionConfig, DatabaseClient};
 
-use super::types::{AuditStore, EventKind, RenewalId, RenewalRecord, RenewalStatus};
+use super::types::{
+  AuditStore, EventKind, IssuedCertRecord, RenewalId, RenewalRecord, RenewalStatus,
+};
 
 const SCHEMA_SURQL: &str = include_str!("surrealdb_initial.surql");
 
 pub struct SurrealAuditStore {
-  client: DatabaseClient,
+  client: Arc<DatabaseClient>,
 }
 
 impl SurrealAuditStore {
@@ -35,46 +38,11 @@ impl SurrealAuditStore {
   /// before applying the schema. Embedded URLs (`mem://`, `file://`)
   /// skip the signin step.
   pub async fn from_spec(spec: &AuditSpec) -> Result<Self> {
-    let AuditSpec::Surrealdb {
-      endpoint,
-      namespace,
-      database,
-      username,
-      password_file,
-    } = spec
-    else {
-      return Err(Error::ConfigInvalid(
-        "from_spec called with non-surrealdb audit spec".into(),
-      ));
-    };
-
-    let mut builder = ConnectionConfig::builder()
-      .url(endpoint.as_str())
-      .namespace(namespace.as_str())
-      .database(database.as_str());
-    if let Some(user) = username {
-      builder = builder.username(user.as_str());
-    }
-    let config = builder
-      .build()
-      .map_err(|e| Error::ConfigInvalid(format!("surrealdb config: {e}")))?;
-    let client = DatabaseClient::new(config).map_err(map_err)?;
-    client.connect().await.map_err(map_err)?;
-
-    if let (Some(user), Some(file)) = (username, password_file) {
-      let pwd = tokio::fs::read_to_string(file)
-        .await
-        .map_err(|e| Error::ConfigInvalid(format!("read {}: {e}", file.display())))?
-        .trim()
-        .to_owned();
-      client
-        .signin(&RootCredentials::new(user.clone(), pwd))
-        .await
-        .map_err(map_err)?;
-    }
-
+    let client = open_client(spec).await?;
     apply_schema(&client).await?;
-    Ok(Self { client })
+    Ok(Self {
+      client: Arc::new(client),
+    })
   }
 
   /// Embedded in-memory store for tests.
@@ -88,11 +56,66 @@ impl SurrealAuditStore {
     let client = DatabaseClient::new(config).map_err(map_err)?;
     client.connect().await.map_err(map_err)?;
     apply_schema(&client).await?;
-    Ok(Self { client })
+    Ok(Self {
+      client: Arc::new(client),
+    })
+  }
+
+  /// Shared handle on the underlying `DatabaseClient`. Used by the
+  /// cluster coordinator so audit + cluster state can live in the
+  /// same SurrealDB connection, which matters for tests against
+  /// `mem://` (each `mem://` connect produces an isolated database).
+  pub fn client_arc(&self) -> Arc<DatabaseClient> {
+    Arc::clone(&self.client)
   }
 }
 
-async fn apply_schema(client: &DatabaseClient) -> Result<()> {
+/// Open a SurrealDB client from a parsed audit spec. Public so the
+/// cluster coordinator can construct a sibling client that points
+/// at the same endpoint + namespace + database.
+pub async fn open_client(spec: &AuditSpec) -> Result<DatabaseClient> {
+  let AuditSpec::Surrealdb {
+    endpoint,
+    namespace,
+    database,
+    username,
+    password_file,
+  } = spec
+  else {
+    return Err(Error::ConfigInvalid(
+      "open_client called with non-surrealdb audit spec".into(),
+    ));
+  };
+
+  let mut builder = ConnectionConfig::builder()
+    .url(endpoint.as_str())
+    .namespace(namespace.as_str())
+    .database(database.as_str());
+  if let Some(user) = username {
+    builder = builder.username(user.as_str());
+  }
+  let config = builder
+    .build()
+    .map_err(|e| Error::ConfigInvalid(format!("surrealdb config: {e}")))?;
+  let client = DatabaseClient::new(config).map_err(map_err)?;
+  client.connect().await.map_err(map_err)?;
+
+  if let (Some(user), Some(file)) = (username, password_file) {
+    let pwd = tokio::fs::read_to_string(file)
+      .await
+      .map_err(|e| Error::ConfigInvalid(format!("read {}: {e}", file.display())))?
+      .trim()
+      .to_owned();
+    client
+      .signin(&RootCredentials::new(user.clone(), pwd))
+      .await
+      .map_err(map_err)?;
+  }
+
+  Ok(client)
+}
+
+pub async fn apply_schema(client: &DatabaseClient) -> Result<()> {
   client.query(SCHEMA_SURQL).await.map_err(map_err)?;
   Ok(())
 }
@@ -245,6 +268,83 @@ impl AuditStore for SurrealAuditStore {
     let ok = row.get("ok").and_then(Value::as_u64).unwrap_or(0) as usize;
     let failed = row.get("failed").and_then(Value::as_u64).unwrap_or(0) as usize;
     Ok((ok, failed))
+  }
+
+  async fn record_issued_cert(
+    &self,
+    cert_id: &str,
+    cert_pem: &str,
+    chain_pem: &str,
+    issued_at: DateTime<Utc>,
+  ) -> Result<()> {
+    let mut vars = BTreeMap::new();
+    vars.insert("cert_id".to_owned(), Value::String(cert_id.to_owned()));
+    vars.insert("cert_pem".to_owned(), Value::String(cert_pem.to_owned()));
+    vars.insert("chain_pem".to_owned(), Value::String(chain_pem.to_owned()));
+    vars.insert(
+      "issued_at".to_owned(),
+      Value::String(issued_at.to_rfc3339()),
+    );
+
+    client_query(
+      &self.client,
+      "CREATE issued_cert CONTENT {
+         cert_id: $cert_id,
+         cert_pem: $cert_pem,
+         chain_pem: $chain_pem,
+         issued_at: <datetime>$issued_at
+       };",
+      vars,
+    )
+    .await?;
+    Ok(())
+  }
+
+  async fn latest_issued_cert(&self, cert_id: &str) -> Result<Option<IssuedCertRecord>> {
+    let mut vars = BTreeMap::new();
+    vars.insert("cert_id".to_owned(), Value::String(cert_id.to_owned()));
+
+    let raw = client_query(
+      &self.client,
+      "SELECT cert_id, cert_pem, chain_pem, issued_at
+       FROM issued_cert
+       WHERE cert_id = $cert_id
+       ORDER BY issued_at DESC
+       LIMIT 1;",
+      vars,
+    )
+    .await?;
+
+    let Some(row) = first_row(&raw) else {
+      return Ok(None);
+    };
+    let cert_id = row
+      .get("cert_id")
+      .and_then(Value::as_str)
+      .ok_or_else(|| Error::Install("issued_cert row missing cert_id".into()))?
+      .to_owned();
+    let cert_pem = row
+      .get("cert_pem")
+      .and_then(Value::as_str)
+      .ok_or_else(|| Error::Install("issued_cert row missing cert_pem".into()))?
+      .to_owned();
+    let chain_pem = row
+      .get("chain_pem")
+      .and_then(Value::as_str)
+      .ok_or_else(|| Error::Install("issued_cert row missing chain_pem".into()))?
+      .to_owned();
+    let issued_at = row
+      .get("issued_at")
+      .and_then(value_as_string)
+      .as_deref()
+      .map(parse_ts)
+      .ok_or_else(|| Error::Install("issued_cert row missing issued_at".into()))?;
+    Ok(Some(IssuedCertRecord {
+      cert_id,
+      cert_pem,
+      chain_pem,
+      issued_at,
+    }))
   }
 }
 

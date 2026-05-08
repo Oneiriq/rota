@@ -17,7 +17,9 @@ use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use super::schema;
-use super::types::{AuditStore, EventKind, RenewalId, RenewalRecord, RenewalStatus};
+use super::types::{
+  AuditStore, EventKind, IssuedCertRecord, RenewalId, RenewalRecord, RenewalStatus,
+};
 
 #[derive(Clone)]
 pub struct SqliteAuditStore {
@@ -189,6 +191,56 @@ impl AuditStore for SqliteAuditStore {
           )
           .map_err(map_err)?;
         Ok((success as usize, failed as usize))
+      })
+      .await
+  }
+
+  async fn record_issued_cert(
+    &self,
+    cert_id: &str,
+    cert_pem: &str,
+    chain_pem: &str,
+    issued_at: DateTime<Utc>,
+  ) -> Result<()> {
+    let cert_id = cert_id.to_owned();
+    let cert_pem = cert_pem.to_owned();
+    let chain_pem = chain_pem.to_owned();
+    self
+      .with_conn(move |c| {
+        c.execute(
+          "INSERT INTO issued_cert(cert_id, cert_pem, chain_pem, issued_at)
+           VALUES (?1, ?2, ?3, ?4)",
+          rusqlite::params![cert_id, cert_pem, chain_pem, issued_at.to_rfc3339()],
+        )
+        .map_err(map_err)?;
+        Ok(())
+      })
+      .await
+  }
+
+  async fn latest_issued_cert(&self, cert_id: &str) -> Result<Option<IssuedCertRecord>> {
+    let cert_id = cert_id.to_owned();
+    self
+      .with_conn(move |c| {
+        let row = c
+          .query_row(
+            "SELECT cert_id, cert_pem, chain_pem, issued_at
+             FROM issued_cert WHERE cert_id = ?1
+             ORDER BY issued_at DESC, id DESC LIMIT 1",
+            [&cert_id],
+            |row| {
+              let issued_at: String = row.get(3)?;
+              Ok(IssuedCertRecord {
+                cert_id: row.get(0)?,
+                cert_pem: row.get(1)?,
+                chain_pem: row.get(2)?,
+                issued_at: parse_ts(&issued_at),
+              })
+            },
+          )
+          .optional()
+          .map_err(map_err)?;
+        Ok(row)
       })
       .await
   }

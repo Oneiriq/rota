@@ -28,12 +28,15 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rota_core::backend::{AlertBackend, AlertEvent, AlertKind};
 use rota_core::cert::parse_not_after;
+use rota_core::cluster::ClusterCoordinator;
 use rota_core::secrets::redact;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::audit::RenewalStatus;
 use crate::backends::CertBackends;
+use crate::cluster::NoOpCoordinator;
+use crate::metrics;
 use crate::renewer::CertRenewer;
 
 /// Knobs the scheduler reads. Built from `config::DaemonConfig` in
@@ -56,6 +59,7 @@ pub struct Scheduler {
   bundles: Arc<Vec<CertBackends>>,
   renewer: Arc<CertRenewer>,
   alerts: Arc<Vec<Arc<dyn AlertBackend>>>,
+  cluster: Arc<dyn ClusterCoordinator>,
   config: SchedulerConfig,
   state: Arc<Mutex<HashMap<String, CertState>>>,
 }
@@ -70,6 +74,7 @@ impl Scheduler {
       bundles,
       renewer,
       alerts: Arc::new(Vec::new()),
+      cluster: Arc::new(NoOpCoordinator::new("local".to_owned())),
       config,
       state: Arc::new(Mutex::new(HashMap::new())),
     }
@@ -80,6 +85,15 @@ impl Scheduler {
   /// configure alerts keep working unchanged.
   pub fn with_alerts(mut self, alerts: Arc<Vec<Arc<dyn AlertBackend>>>) -> Self {
     self.alerts = alerts;
+    self
+  }
+
+  /// Attach a cluster coordinator. The scheduler skips its sweep on
+  /// any tick where the coordinator reports follower mode. Builder-
+  /// style so single-node call sites keep working unchanged
+  /// (defaults to a NoOpCoordinator that always reports leader).
+  pub fn with_cluster(mut self, cluster: Arc<dyn ClusterCoordinator>) -> Self {
+    self.cluster = cluster;
     self
   }
 
@@ -103,8 +117,17 @@ impl Scheduler {
   }
 
   /// Single sweep over every bundle. Public for the future
-  /// `rota renew` CLI hook.
+  /// `rota renew` CLI hook. Followers (cluster mode, lock not held)
+  /// skip the sweep silently; the leader keeps doing the work.
   pub async fn sweep(&self) {
+    if !self.cluster.is_leader() {
+      tracing::debug!(
+        coordinator = %self.cluster.name(),
+        node = %self.cluster.node_id(),
+        "scheduler sweep skipped: follower mode"
+      );
+      return;
+    }
     for bundle in self.bundles.iter() {
       if self.should_renew(bundle).await {
         self.attempt_renewal(bundle).await;
@@ -132,7 +155,12 @@ impl Scheduler {
       }
       Ok(Some(pem)) => match parse_not_after(&pem) {
         Ok(not_after) => {
-          let days_left = (not_after - Utc::now()).num_days();
+          let delta = not_after - Utc::now();
+          let days_left = delta.num_days();
+          // Gauge tracks fractional days so a cert that expires in
+          // 12 hours shows up as 0.5 rather than rounding to 0.
+          let days_left_f = (delta.num_seconds() as f64) / 86_400.0;
+          metrics::set_days_until_expiry(&bundle.config.id, days_left_f);
           let due = days_left <= self.config.threshold_days;
           if !due {
             tracing::debug!(
@@ -201,6 +229,13 @@ impl Scheduler {
       }
     }
 
+    let outcome = if result.is_ok() {
+      metrics::OUTCOME_SUCCESS
+    } else {
+      metrics::OUTCOME_FAILURE
+    };
+    metrics::record_renewal_attempt(&bundle.config.id, outcome);
+
     if let Some(msg) = failure_msg {
       self.dispatch_failure(&bundle.config.id, &msg).await;
     }
@@ -220,14 +255,19 @@ impl Scheduler {
       timestamp: Utc::now(),
     };
     for alert in self.alerts.iter() {
-      if let Err(err) = alert.dispatch(&event).await {
-        tracing::error!(
-          backend = %alert.name(),
-          cert = %cert_id,
-          error = %err,
-          "alert dispatch failed"
-        );
-      }
+      let outcome = match alert.dispatch(&event).await {
+        Ok(()) => metrics::OUTCOME_SUCCESS,
+        Err(err) => {
+          tracing::error!(
+            backend = %alert.name(),
+            cert = %cert_id,
+            error = %err,
+            "alert dispatch failed"
+          );
+          metrics::OUTCOME_FAILURE
+        }
+      };
+      metrics::record_alert_dispatch(alert.name(), outcome);
     }
   }
 }

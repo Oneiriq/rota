@@ -3,11 +3,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use std::sync::atomic::AtomicBool;
+
 use rota_core::backend::{
-  AlertBackend, AlertEvent, AlertKind, CABackend, DcvChallenge, InstallBackend, IssuedCert,
-  RegistrarBackend,
+  AlertBackend, AlertEvent, AlertKind, CABackend, DcvBackend, DcvChallenge, InstallBackend,
+  IssuedCert,
 };
-use rota_core::config::{CaSpec, CertConfig, InstallSpec, RegistrarSpec};
+use rota_core::cluster::ClusterCoordinator;
+use rota_core::config::{CaSpec, CertConfig, DcvSpec, InstallSpec};
 use rota_core::Result;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -27,9 +30,14 @@ impl CABackend for OkCa {
   fn name(&self) -> &str {
     "ok-ca"
   }
-  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    _domains: &[String],
+    _csr_pem: &str,
+    _preferred_kinds: &[rota_core::backend::ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     self.submit_calls.fetch_add(1, Ordering::SeqCst);
-    Ok(vec![DcvChallenge {
+    Ok(vec![DcvChallenge::Dns01 {
       record_name: "_acme-challenge.example.com".to_owned(),
       record_value: "x".to_owned(),
       ttl: 60,
@@ -44,17 +52,20 @@ impl CABackend for OkCa {
 }
 
 #[derive(Default)]
-struct OkRegistrar;
+struct OkDcv;
 
 #[async_trait]
-impl RegistrarBackend for OkRegistrar {
+impl DcvBackend for OkDcv {
   fn name(&self) -> &str {
-    "ok-reg"
+    "ok-dcv"
   }
-  async fn publish_txt(&self, _: &DcvChallenge) -> Result<()> {
+  fn supported_kinds(&self) -> &[rota_core::backend::ChallengeKind] {
+    &[rota_core::backend::ChallengeKind::Dns01]
+  }
+  async fn publish(&self, _: &DcvChallenge) -> Result<()> {
     Ok(())
   }
-  async fn remove_txt(&self, _: &DcvChallenge) -> Result<()> {
+  async fn remove(&self, _: &DcvChallenge) -> Result<()> {
     Ok(())
   }
 }
@@ -100,7 +111,7 @@ fn cert_config(id: &str, key_path: PathBuf) -> CertConfig {
     domains: vec!["example.com".to_owned()],
     key_path,
     ca: CaSpec::Namecheap { ssl_id: 1 },
-    registrar: RegistrarSpec::Namecheap,
+    dcv: DcvSpec::Namecheap,
     install: InstallSpec::Filesystem {
       directory: PathBuf::from("/tmp/unused"),
     },
@@ -136,7 +147,7 @@ async fn build_scheduler(
   let bundle = CertBackends {
     config: cert_config(cert_id, key_path),
     ca: Arc::clone(&ca) as Arc<dyn CABackend>,
-    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    dcv: Arc::new(OkDcv) as Arc<dyn DcvBackend>,
     install: Some(Arc::clone(&install) as Arc<dyn InstallBackend>),
   };
   // Leak the tempdir so the key path stays valid for the test
@@ -216,8 +227,13 @@ async fn cooldown_blocks_immediate_retry_after_failure() {
     fn name(&self) -> &str {
       "failing-ca"
     }
-    async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
-      Ok(vec![DcvChallenge {
+    async fn submit(
+      &self,
+      _: &[String],
+      _: &str,
+      _: &[rota_core::backend::ChallengeKind],
+    ) -> Result<Vec<DcvChallenge>> {
+      Ok(vec![DcvChallenge::Dns01 {
         record_name: "_acme-challenge.example.com".to_owned(),
         record_value: "x".to_owned(),
         ttl: 60,
@@ -237,7 +253,7 @@ async fn cooldown_blocks_immediate_retry_after_failure() {
   let bundle = CertBackends {
     config: cert_config("flaky", tmp.path().join("k.key")),
     ca: Arc::new(FailingCa) as Arc<dyn CABackend>,
-    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    dcv: Arc::new(OkDcv) as Arc<dyn DcvBackend>,
     install: Some(Arc::clone(&install) as Arc<dyn InstallBackend>),
   };
   std::mem::forget(tmp);
@@ -319,8 +335,13 @@ async fn alert_dispatched_on_renewal_failure() {
     fn name(&self) -> &str {
       "failing-ca"
     }
-    async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
-      Ok(vec![DcvChallenge {
+    async fn submit(
+      &self,
+      _: &[String],
+      _: &str,
+      _: &[rota_core::backend::ChallengeKind],
+    ) -> Result<Vec<DcvChallenge>> {
+      Ok(vec![DcvChallenge::Dns01 {
         record_name: "_acme-challenge.example.com".to_owned(),
         record_value: "x".to_owned(),
         ttl: 60,
@@ -340,7 +361,7 @@ async fn alert_dispatched_on_renewal_failure() {
   let bundle = CertBackends {
     config: cert_config("alert-fail", tmp.path().join("k.key")),
     ca: Arc::new(FailingCa) as Arc<dyn CABackend>,
-    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    dcv: Arc::new(OkDcv) as Arc<dyn DcvBackend>,
     install: Some(Arc::clone(&install) as Arc<dyn InstallBackend>),
   };
   std::mem::forget(tmp);
@@ -389,7 +410,7 @@ async fn no_alert_dispatched_on_renewal_success() {
   let bundle = CertBackends {
     config: cert_config("alert-ok", key_path),
     ca: Arc::clone(&ca) as Arc<dyn CABackend>,
-    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    dcv: Arc::new(OkDcv) as Arc<dyn DcvBackend>,
     install: Some(Arc::clone(&install) as Arc<dyn InstallBackend>),
   };
   std::mem::forget(tmp);
@@ -413,6 +434,90 @@ async fn no_alert_dispatched_on_renewal_success() {
   );
 }
 
+/// Cluster coordinator with a flippable leadership state. Lets
+/// scheduler tests assert that a sweep is gated on `is_leader()`.
+struct ToggleCluster {
+  node_id: String,
+  is_leader: AtomicBool,
+}
+
+impl ToggleCluster {
+  fn new(is_leader: bool) -> Self {
+    Self {
+      node_id: "test-node".to_owned(),
+      is_leader: AtomicBool::new(is_leader),
+    }
+  }
+
+  fn set_leader(&self, value: bool) {
+    self.is_leader.store(value, Ordering::Release);
+  }
+}
+
+#[async_trait]
+impl ClusterCoordinator for ToggleCluster {
+  fn name(&self) -> &str {
+    "toggle"
+  }
+  fn node_id(&self) -> &str {
+    &self.node_id
+  }
+  fn is_leader(&self) -> bool {
+    self.is_leader.load(Ordering::Acquire)
+  }
+  async fn run(&self) -> Result<()> {
+    std::future::pending::<()>().await;
+    Ok(())
+  }
+}
+
+#[tokio::test]
+async fn follower_skips_sweep_entirely() {
+  let install = Arc::new(ProbedInstall::new(None));
+  let (sched_default, ca, install) = build_scheduler(
+    "follower-test",
+    Arc::clone(&install),
+    30,
+    Duration::from_secs(60),
+  )
+  .await;
+
+  let cluster = Arc::new(ToggleCluster::new(false));
+  let scheduler = sched_default.with_cluster(Arc::clone(&cluster) as Arc<dyn ClusterCoordinator>);
+
+  scheduler.sweep().await;
+
+  // Cluster says we're a follower: nothing should have been
+  // attempted, even though install reports no cert installed.
+  assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 0);
+  assert_eq!(install.install_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn promotion_to_leader_resumes_sweeps() {
+  let install = Arc::new(ProbedInstall::new(None));
+  let (sched_default, ca, install) = build_scheduler(
+    "promotion-test",
+    Arc::clone(&install),
+    30,
+    Duration::from_secs(60),
+  )
+  .await;
+
+  let cluster = Arc::new(ToggleCluster::new(false));
+  let scheduler = sched_default.with_cluster(Arc::clone(&cluster) as Arc<dyn ClusterCoordinator>);
+
+  // First sweep is suppressed.
+  scheduler.sweep().await;
+  assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 0);
+
+  // Promote to leader; next sweep proceeds.
+  cluster.set_leader(true);
+  scheduler.sweep().await;
+  assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(install.install_calls.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn no_install_backend_means_no_renewal() {
   let tmp = tempfile::tempdir().unwrap();
@@ -424,7 +529,7 @@ async fn no_install_backend_means_no_renewal() {
   let bundle = CertBackends {
     config: cert_config("install-less", tmp.path().join("k.key")),
     ca: Arc::clone(&ca) as Arc<dyn CABackend>,
-    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    dcv: Arc::new(OkDcv) as Arc<dyn DcvBackend>,
     install: None,
   };
   std::mem::forget(tmp);

@@ -35,6 +35,12 @@ pub struct RotaConfig {
   /// cert names ACME as its CA.
   #[serde(default)]
   pub acme: Option<AcmeAccount>,
+  /// Cluster federation settings. Omit (or set `enabled: false`) for
+  /// the single-node default; the scheduler always sweeps. Enabling
+  /// requires a SurrealDB audit backend (the lock lives in the same
+  /// database) and a unique `node_id` per rotad instance.
+  #[serde(default)]
+  pub cluster: Option<ClusterSpec>,
   /// Daemon-wide alert sinks. Every event fans out to every entry,
   /// so operators can mix (e.g.) email + webhook in one config.
   /// Empty or omitted = silent (renewal failures still hit the audit
@@ -112,8 +118,10 @@ pub struct CertConfig {
   pub key_path: PathBuf,
   /// CA that issues this cert.
   pub ca: CaSpec,
-  /// Registrar that hosts DNS for DCV.
-  pub registrar: RegistrarSpec,
+  /// DCV strategy that satisfies the CA's challenge. Renamed from
+  /// `registrar` in v0.6 because HTTP-01 solvers (webroot, internal
+  /// listener) do not involve a registrar.
+  pub dcv: DcvSpec,
   /// Where the issued cert + chain land.
   pub install: InstallSpec,
 }
@@ -146,6 +154,29 @@ pub struct CloudflareAccount {
   /// Path to a file containing the API token. Read at runtime so
   /// the secret never sits in the parsed config tree.
   pub api_token_file: PathBuf,
+}
+
+/// Cluster federation settings. Multiple rotad instances pointing
+/// at the same SurrealDB audit store elect a single leader to run
+/// the renewal scheduler; followers stand by for failover.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterSpec {
+  /// Toggle. `false` (default if unset) is identical to omitting the
+  /// `cluster:` block: the daemon runs as a single node.
+  #[serde(default)]
+  pub enabled: bool,
+  /// Stable id for this rotad instance. Must be unique across
+  /// cluster members. Convention: hostname, or a deployment label.
+  pub node_id: String,
+  /// Lease duration in seconds. The coordinator refreshes the
+  /// leader lock at lease/3, so a lease of 60s gives a 20s refresh
+  /// cadence and a worst-case 60s failover window.
+  #[serde(default = "default_cluster_lease_seconds")]
+  pub lease_seconds: u64,
+}
+
+fn default_cluster_lease_seconds() -> u64 {
+  60
 }
 
 /// Account-wide ACME directory + account material.
@@ -232,16 +263,31 @@ pub enum CaSpec {
   Acme,
 }
 
-/// Registrar-backend selector.
+/// DCV-backend selector. Each variant carries the strategy-specific
+/// settings inline. DNS-01 variants (Namecheap, Cloudflare) talk to
+/// a registrar API; HTTP-01 variants (Webroot) drop a token under
+/// `/.well-known/acme-challenge/` for an existing webserver to serve.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RegistrarSpec {
-  /// Namecheap-managed DNS. Account creds come from the top-level
-  /// `namecheap` block.
+pub enum DcvSpec {
+  /// DNS-01 via Namecheap-managed DNS. Account creds come from the
+  /// top-level `namecheap` block.
   Namecheap,
-  /// Cloudflare DNS via the v4 API. Account creds come from the
+  /// DNS-01 via Cloudflare's v4 API. Account creds come from the
   /// top-level `cloudflare` block.
   Cloudflare,
+  /// HTTP-01 via a webroot directory served by an existing
+  /// webserver. The daemon writes
+  /// `<directory>/.well-known/acme-challenge/<token>` containing
+  /// the key authorization; the configured webserver must serve
+  /// `<directory>` over plain HTTP on port 80 so the CA's challenge
+  /// fetch resolves.
+  Webroot {
+    /// Document root the webserver serves. The daemon appends
+    /// `.well-known/acme-challenge/` itself and creates the path
+    /// if it does not exist.
+    directory: PathBuf,
+  },
 }
 
 /// Alert-backend selector. Each variant carries the sink-specific
@@ -277,6 +323,24 @@ pub enum AlertSpec {
     /// translate to a comma-separated header list.
     to: Vec<String>,
   },
+  /// HTTPS webhook. POSTs a generic JSON envelope
+  /// (`{cert_id, kind, message, timestamp}`) to the configured URL.
+  /// For Slack-incoming or Discord webhook formats, run the events
+  /// through a small relay (n8n, Pipedream, your own service); rota
+  /// stays vendor-neutral on the wire.
+  Webhook {
+    /// Full URL to POST to (must include scheme).
+    url: String,
+    /// Optional file containing a Bearer token. When set, the daemon
+    /// adds `Authorization: Bearer <token>` to the request.
+    #[serde(default)]
+    bearer_token_file: Option<PathBuf>,
+    /// Per-request timeout in seconds. Defaults to 10 if omitted; the
+    /// scheduler waits synchronously, so a runaway sink would stall
+    /// other alerts in the same fan-out.
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+  },
 }
 
 /// TLS mode for SMTP submission.
@@ -306,6 +370,62 @@ pub enum InstallSpec {
   /// Plain filesystem: write `<dir>/<id>.crt`, `<dir>/<id>.chain.crt`,
   /// and a copy of the private key with mode 600.
   Filesystem { directory: PathBuf },
+  /// Filesystem write + nginx reload. Files land in `<directory>`
+  /// using the same naming convention as `Filesystem`, then the
+  /// configured `reload_command` runs to make nginx pick the new
+  /// cert up. Default reload is `["nginx", "-s", "reload"]`; override
+  /// for systemd (`["systemctl", "reload", "nginx"]`) or sudo wrappers.
+  Nginx {
+    directory: PathBuf,
+    /// Override the reload invocation. Argv-style; empty list falls
+    /// back to the default. The daemon does not pass through a shell,
+    /// so quoting is unnecessary.
+    #[serde(default)]
+    reload_command: Option<Vec<String>>,
+  },
+  /// Filesystem write + HAProxy runtime API hot-swap. Files land in
+  /// `<directory>` using the same naming convention as `Filesystem`
+  /// (so an operator restart still reads the latest cert from disk),
+  /// then the daemon pushes the new cert to HAProxy's admin socket
+  /// using the runtime API: `set ssl cert <storage_name>` followed
+  /// by `commit ssl cert <storage_name>`. No reload, no dropped
+  /// connections. Requires HAProxy 2.x or later with the admin
+  /// socket exposed (`stats socket /run/haproxy/admin.sock mode 660
+  /// level admin` in the HAProxy config).
+  Haproxy {
+    /// Directory to land the cert + chain + key bundle in (used
+    /// both for operator visibility and to feed `current_cert_pem`
+    /// without round-tripping through the runtime API).
+    directory: PathBuf,
+    /// Path to HAProxy's admin socket. Common defaults:
+    /// `/run/haproxy/admin.sock`, `/var/run/haproxy.sock`.
+    socket_path: PathBuf,
+    /// Storage name HAProxy uses internally for the cert. Matches
+    /// the path declared in `bind ... ssl crt <name>` in haproxy.cfg
+    /// (or under `crt-list`).
+    cert_storage_name: String,
+  },
+  /// Kubernetes `kubernetes.io/tls` Secret. Server-side applies a
+  /// Secret named `secret_name` in `namespace` with `tls.crt`
+  /// (cert + chain bundle) and `tls.key` data fields, suitable for
+  /// Ingress, Gateway, and any controller that consumes the
+  /// standard TLS Secret shape. Auth is in-cluster service account
+  /// when `kubeconfig_path` is omitted (the daemon reads
+  /// `/var/run/secrets/kubernetes.io/serviceaccount/`), otherwise
+  /// it loads the named kubeconfig file. The service account
+  /// (or kubeconfig user) needs `get`, `create`, and `patch` on
+  /// `secrets` in the target namespace.
+  K8sSecret {
+    /// Namespace the Secret lives in.
+    namespace: String,
+    /// Name of the Secret resource. Matches the `secretName` field
+    /// on Ingress / Gateway TLS configurations.
+    secret_name: String,
+    /// Optional kubeconfig file. Omit when running inside a pod
+    /// to use the mounted service account credentials.
+    #[serde(default)]
+    kubeconfig_path: Option<PathBuf>,
+  },
 }
 
 fn default_db_path() -> PathBuf {
@@ -352,7 +472,7 @@ mod tests {
       CaSpec::Namecheap { ssl_id } => assert_eq!(ssl_id, 12345678),
       _ => panic!("expected namecheap ca"),
     }
-    assert!(matches!(cert.registrar, RegistrarSpec::Namecheap));
+    assert!(matches!(cert.dcv, DcvSpec::Namecheap));
     match &cert.install {
       InstallSpec::Dsm { description } => assert_eq!(description, "My Public Site"),
       _ => panic!("expected dsm install"),
@@ -414,7 +534,96 @@ certs: []
           ]
         );
       }
+      _ => panic!("expected email alert"),
     }
+  }
+
+  #[test]
+  fn parses_webhook_alert_spec() {
+    let yaml = r#"
+alerts:
+  - kind: webhook
+    url: https://hooks.example.com/incoming/abc
+    bearer_token_file: /etc/rota/secrets/webhook.token
+    timeout_seconds: 5
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(cfg.alerts.len(), 1);
+    match &cfg.alerts[0] {
+      AlertSpec::Webhook {
+        url,
+        bearer_token_file,
+        timeout_seconds,
+      } => {
+        assert_eq!(url, "https://hooks.example.com/incoming/abc");
+        assert_eq!(
+          bearer_token_file.as_ref().unwrap(),
+          &PathBuf::from("/etc/rota/secrets/webhook.token")
+        );
+        assert_eq!(*timeout_seconds, Some(5));
+      }
+      _ => panic!("expected webhook alert"),
+    }
+  }
+
+  #[test]
+  fn webhook_optional_fields_default() {
+    let yaml = r#"
+alerts:
+  - kind: webhook
+    url: https://hooks.example.com/incoming/abc
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.alerts[0] {
+      AlertSpec::Webhook {
+        bearer_token_file,
+        timeout_seconds,
+        ..
+      } => {
+        assert!(bearer_token_file.is_none());
+        assert!(timeout_seconds.is_none());
+      }
+      _ => panic!("expected webhook alert"),
+    }
+  }
+
+  #[test]
+  fn parses_cluster_spec_with_explicit_lease() {
+    let yaml = r#"
+cluster:
+  enabled: true
+  node_id: host-a
+  lease_seconds: 90
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    let cluster = cfg.cluster.expect("cluster block required");
+    assert!(cluster.enabled);
+    assert_eq!(cluster.node_id, "host-a");
+    assert_eq!(cluster.lease_seconds, 90);
+  }
+
+  #[test]
+  fn cluster_lease_seconds_defaults_to_60() {
+    let yaml = r#"
+cluster:
+  enabled: false
+  node_id: standalone
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    let cluster = cfg.cluster.expect("cluster block required");
+    assert!(!cluster.enabled);
+    assert_eq!(cluster.lease_seconds, 60);
+  }
+
+  #[test]
+  fn missing_cluster_block_parses() {
+    let yaml = "certs: []\n";
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(cfg.cluster.is_none());
   }
 
   #[test]
@@ -440,7 +649,9 @@ alerts:
 certs: []
 "#;
     let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
-    let AlertSpec::Email { tls, .. } = &cfg.alerts[0];
+    let AlertSpec::Email { tls, .. } = &cfg.alerts[0] else {
+      panic!("expected email alert");
+    };
     assert!(matches!(tls, SmtpTls::Starttls));
   }
 
@@ -456,7 +667,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: filesystem
       directory: /etc/ssl/example
@@ -468,6 +679,204 @@ certs:
         assert_eq!(directory, &PathBuf::from("/etc/ssl/example"));
       }
       _ => panic!("expected filesystem install"),
+    }
+  }
+
+  #[test]
+  fn parses_nginx_install_variant_with_reload_override() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-nginx
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    dcv: { kind: namecheap }
+    install:
+      kind: nginx
+      directory: /etc/nginx/certs/example
+      reload_command: ["systemctl", "reload", "nginx"]
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::Nginx {
+        directory,
+        reload_command,
+      } => {
+        assert_eq!(directory, &PathBuf::from("/etc/nginx/certs/example"));
+        assert_eq!(
+          reload_command.as_ref().unwrap(),
+          &vec![
+            "systemctl".to_owned(),
+            "reload".to_owned(),
+            "nginx".to_owned(),
+          ]
+        );
+      }
+      _ => panic!("expected nginx install"),
+    }
+  }
+
+  #[test]
+  fn parses_webroot_dcv_variant() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+acme:
+  directory_url: https://acme-v02.api.letsencrypt.org/directory
+  account_credentials_file: /tmp/acme.json
+certs:
+  - id: example-http01
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: acme }
+    dcv:
+      kind: webroot
+      directory: /var/www/example.org
+    install:
+      kind: filesystem
+      directory: /etc/ssl/example
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].dcv {
+      DcvSpec::Webroot { directory } => {
+        assert_eq!(directory, &PathBuf::from("/var/www/example.org"));
+      }
+      _ => panic!("expected webroot dcv"),
+    }
+  }
+
+  #[test]
+  fn parses_haproxy_install_variant() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-haproxy
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    dcv: { kind: namecheap }
+    install:
+      kind: haproxy
+      directory: /etc/haproxy/certs
+      socket_path: /run/haproxy/admin.sock
+      cert_storage_name: /etc/haproxy/certs/example.pem
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::Haproxy {
+        directory,
+        socket_path,
+        cert_storage_name,
+      } => {
+        assert_eq!(directory, &PathBuf::from("/etc/haproxy/certs"));
+        assert_eq!(socket_path, &PathBuf::from("/run/haproxy/admin.sock"));
+        assert_eq!(cert_storage_name, "/etc/haproxy/certs/example.pem");
+      }
+      _ => panic!("expected haproxy install"),
+    }
+  }
+
+  #[test]
+  fn parses_k8s_secret_install_variant_with_kubeconfig() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-k8s
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    dcv: { kind: namecheap }
+    install:
+      kind: k8s_secret
+      namespace: ingress-nginx
+      secret_name: example-tls
+      kubeconfig_path: /etc/rota/kubeconfig
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::K8sSecret {
+        namespace,
+        secret_name,
+        kubeconfig_path,
+      } => {
+        assert_eq!(namespace, "ingress-nginx");
+        assert_eq!(secret_name, "example-tls");
+        assert_eq!(
+          kubeconfig_path.as_ref().unwrap(),
+          &PathBuf::from("/etc/rota/kubeconfig")
+        );
+      }
+      _ => panic!("expected k8s_secret install"),
+    }
+  }
+
+  #[test]
+  fn k8s_secret_kubeconfig_path_is_optional() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-k8s-incluster
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    dcv: { kind: namecheap }
+    install:
+      kind: k8s_secret
+      namespace: default
+      secret_name: example-tls
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::K8sSecret {
+        kubeconfig_path, ..
+      } => {
+        assert!(
+          kubeconfig_path.is_none(),
+          "in-cluster mode = kubeconfig_path: None"
+        );
+      }
+      _ => panic!("expected k8s_secret install"),
+    }
+  }
+
+  #[test]
+  fn nginx_reload_command_is_optional() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-nginx-default
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    dcv: { kind: namecheap }
+    install:
+      kind: nginx
+      directory: /etc/nginx/certs/example
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::Nginx { reload_command, .. } => {
+        assert!(reload_command.is_none());
+      }
+      _ => panic!("expected nginx install"),
     }
   }
 }

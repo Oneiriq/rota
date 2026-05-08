@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rota_core::backend::{CABackend, DcvChallenge, InstallBackend, IssuedCert, RegistrarBackend};
-use rota_core::config::{CaSpec, CertConfig, InstallSpec, RegistrarSpec};
+use rota_core::backend::{CABackend, DcvBackend, DcvChallenge, InstallBackend, IssuedCert};
+use rota_core::config::{CaSpec, CertConfig, DcvSpec, InstallSpec};
 use rota_core::Result;
 
 use super::*;
@@ -27,9 +27,14 @@ impl CABackend for MockCa {
   fn name(&self) -> &str {
     "mock-ca"
   }
-  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    _domains: &[String],
+    _csr_pem: &str,
+    _preferred_kinds: &[rota_core::backend::ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     self.submit_calls.fetch_add(1, Ordering::SeqCst);
-    Ok(vec![DcvChallenge {
+    Ok(vec![DcvChallenge::Dns01 {
       record_name: "_acme-challenge.example.com".to_owned(),
       record_value: "deadbeef".to_owned(),
       ttl: 60,
@@ -48,21 +53,24 @@ impl CABackend for MockCa {
 }
 
 #[derive(Default)]
-struct MockRegistrar {
+struct MockDcv {
   publish_calls: AtomicUsize,
   remove_calls: AtomicUsize,
 }
 
 #[async_trait]
-impl RegistrarBackend for MockRegistrar {
+impl DcvBackend for MockDcv {
   fn name(&self) -> &str {
-    "mock-registrar"
+    "mock-dcv"
   }
-  async fn publish_txt(&self, _challenge: &DcvChallenge) -> Result<()> {
+  fn supported_kinds(&self) -> &[rota_core::backend::ChallengeKind] {
+    &[rota_core::backend::ChallengeKind::Dns01]
+  }
+  async fn publish(&self, _challenge: &DcvChallenge) -> Result<()> {
     self.publish_calls.fetch_add(1, Ordering::SeqCst);
     Ok(())
   }
-  async fn remove_txt(&self, _challenge: &DcvChallenge) -> Result<()> {
+  async fn remove(&self, _challenge: &DcvChallenge) -> Result<()> {
     self.remove_calls.fetch_add(1, Ordering::SeqCst);
     Ok(())
   }
@@ -91,7 +99,7 @@ fn cert_config(id: &str, key_path: PathBuf) -> CertConfig {
     domains: vec!["example.com".to_owned(), "www.example.com".to_owned()],
     key_path,
     ca: CaSpec::Namecheap { ssl_id: 1 },
-    registrar: RegistrarSpec::Namecheap,
+    dcv: DcvSpec::Namecheap,
     install: InstallSpec::Filesystem {
       directory: PathBuf::from("/tmp/unused"),
     },
@@ -101,13 +109,13 @@ fn cert_config(id: &str, key_path: PathBuf) -> CertConfig {
 fn bundle(
   config: CertConfig,
   ca: Arc<MockCa>,
-  registrar: Arc<MockRegistrar>,
+  dcv: Arc<MockDcv>,
   install: Option<Arc<MockInstall>>,
 ) -> CertBackends {
   CertBackends {
     config,
     ca,
-    registrar,
+    dcv,
     install: install.map(|i| i as Arc<dyn InstallBackend>),
   }
 }
@@ -119,21 +127,21 @@ async fn happy_path_runs_every_step_and_audits_success() {
   let tmp = tempfile::tempdir().unwrap();
 
   let ca = Arc::new(MockCa::default());
-  let registrar = Arc::new(MockRegistrar::default());
+  let dcv = Arc::new(MockDcv::default());
   let install = Arc::new(MockInstall::default());
 
   let b = bundle(
     cert_config("happy", tmp.path().join("k.key")),
     Arc::clone(&ca),
-    Arc::clone(&registrar),
+    Arc::clone(&dcv),
     Some(Arc::clone(&install)),
   );
   renewer.run(&b).await.unwrap();
 
   assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 1);
   assert_eq!(ca.await_calls.load(Ordering::SeqCst), 1);
-  assert_eq!(registrar.publish_calls.load(Ordering::SeqCst), 1);
-  assert_eq!(registrar.remove_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(dcv.publish_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(dcv.remove_calls.load(Ordering::SeqCst), 1);
   assert_eq!(install.install_calls.load(Ordering::SeqCst), 1);
 
   let latest = audit.latest_renewal("happy").await.unwrap().unwrap();
@@ -156,21 +164,21 @@ async fn ca_failure_still_removes_dcv_and_records_failure() {
     fail_await: true,
     ..Default::default()
   });
-  let registrar = Arc::new(MockRegistrar::default());
+  let dcv = Arc::new(MockDcv::default());
   let install = Arc::new(MockInstall::default());
 
   let b = bundle(
     cert_config("flaky", tmp.path().join("k.key")),
     Arc::clone(&ca),
-    Arc::clone(&registrar),
+    Arc::clone(&dcv),
     Some(Arc::clone(&install)),
   );
   let err = renewer.run(&b).await.unwrap_err();
   assert!(err.to_string().contains("ca timeout"));
 
   // DCV cleanup ran even though await_issuance errored.
-  assert_eq!(registrar.publish_calls.load(Ordering::SeqCst), 1);
-  assert_eq!(registrar.remove_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(dcv.publish_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(dcv.remove_calls.load(Ordering::SeqCst), 1);
   // Install never ran.
   assert_eq!(install.install_calls.load(Ordering::SeqCst), 0);
 
@@ -187,12 +195,12 @@ async fn reuses_existing_key_on_disk() {
   let key_path = tmp.path().join("persistent.key");
 
   let ca = Arc::new(MockCa::default());
-  let registrar = Arc::new(MockRegistrar::default());
+  let dcv = Arc::new(MockDcv::default());
 
   let b1 = bundle(
     cert_config("rotating", key_path.clone()),
     Arc::clone(&ca),
-    Arc::clone(&registrar),
+    Arc::clone(&dcv),
     None,
   );
   renewer.run(&b1).await.unwrap();
@@ -201,7 +209,7 @@ async fn reuses_existing_key_on_disk() {
   let b2 = bundle(
     cert_config("rotating", key_path.clone()),
     Arc::clone(&ca),
-    Arc::clone(&registrar),
+    Arc::clone(&dcv),
     None,
   );
   renewer.run(&b2).await.unwrap();
@@ -223,12 +231,12 @@ async fn install_skipped_when_no_install_backend() {
   let tmp = tempfile::tempdir().unwrap();
 
   let ca = Arc::new(MockCa::default());
-  let registrar = Arc::new(MockRegistrar::default());
+  let dcv = Arc::new(MockDcv::default());
 
   let b = bundle(
     cert_config("no-install", tmp.path().join("k.key")),
     Arc::clone(&ca),
-    Arc::clone(&registrar),
+    Arc::clone(&dcv),
     None,
   );
   renewer.run(&b).await.unwrap();
