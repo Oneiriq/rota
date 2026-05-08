@@ -235,8 +235,9 @@ pub enum CaSpec {
 }
 
 /// DCV-backend selector. Each variant carries the strategy-specific
-/// settings inline. Today's variants are all DNS-01 (Namecheap,
-/// Cloudflare); HTTP-01 solvers layer on as additional variants.
+/// settings inline. DNS-01 variants (Namecheap, Cloudflare) talk to
+/// a registrar API; HTTP-01 variants (Webroot) drop a token under
+/// `/.well-known/acme-challenge/` for an existing webserver to serve.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DcvSpec {
@@ -246,6 +247,18 @@ pub enum DcvSpec {
   /// DNS-01 via Cloudflare's v4 API. Account creds come from the
   /// top-level `cloudflare` block.
   Cloudflare,
+  /// HTTP-01 via a webroot directory served by an existing
+  /// webserver. The daemon writes
+  /// `<directory>/.well-known/acme-challenge/<token>` containing
+  /// the key authorization; the configured webserver must serve
+  /// `<directory>` over plain HTTP on port 80 so the CA's challenge
+  /// fetch resolves.
+  Webroot {
+    /// Document root the webserver serves. The daemon appends
+    /// `.well-known/acme-challenge/` itself and creates the path
+    /// if it does not exist.
+    directory: PathBuf,
+  },
 }
 
 /// Alert-backend selector. Each variant carries the sink-specific
@@ -638,6 +651,37 @@ certs:
         );
       }
       _ => panic!("expected nginx install"),
+    }
+  }
+
+  #[test]
+  fn parses_webroot_dcv_variant() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+acme:
+  directory_url: https://acme-v02.api.letsencrypt.org/directory
+  account_credentials_file: /tmp/acme.json
+certs:
+  - id: example-http01
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: acme }
+    dcv:
+      kind: webroot
+      directory: /var/www/example.org
+    install:
+      kind: filesystem
+      directory: /etc/ssl/example
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].dcv {
+      DcvSpec::Webroot { directory } => {
+        assert_eq!(directory, &PathBuf::from("/var/www/example.org"));
+      }
+      _ => panic!("expected webroot dcv"),
     }
   }
 

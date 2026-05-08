@@ -20,7 +20,12 @@ impl CABackend for StubCa {
   fn name(&self) -> &str {
     "stub-ca"
   }
-  async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    _: &[String],
+    _: &str,
+    _: &[rota_core::backend::ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     unreachable!("status path does not call CA")
   }
   async fn await_issuance(&self, _: &[String]) -> Result<IssuedCert> {
@@ -35,8 +40,8 @@ impl DcvBackend for StubDcv {
   fn name(&self) -> &str {
     "stub-dcv"
   }
-  fn supports(&self, _: &DcvChallenge) -> bool {
-    true
+  fn supported_kinds(&self) -> &[rota_core::backend::ChallengeKind] {
+    &[rota_core::backend::ChallengeKind::Dns01]
   }
   async fn publish(&self, _: &DcvChallenge) -> Result<()> {
     unreachable!("status path does not call dcv")

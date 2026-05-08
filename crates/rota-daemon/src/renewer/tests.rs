@@ -27,7 +27,12 @@ impl CABackend for MockCa {
   fn name(&self) -> &str {
     "mock-ca"
   }
-  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    _domains: &[String],
+    _csr_pem: &str,
+    _preferred_kinds: &[rota_core::backend::ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     self.submit_calls.fetch_add(1, Ordering::SeqCst);
     Ok(vec![DcvChallenge::Dns01 {
       record_name: "_acme-challenge.example.com".to_owned(),
@@ -58,8 +63,8 @@ impl DcvBackend for MockDcv {
   fn name(&self) -> &str {
     "mock-dcv"
   }
-  fn supports(&self, _: &DcvChallenge) -> bool {
-    true
+  fn supported_kinds(&self) -> &[rota_core::backend::ChallengeKind] {
+    &[rota_core::backend::ChallengeKind::Dns01]
   }
   async fn publish(&self, _challenge: &DcvChallenge) -> Result<()> {
     self.publish_calls.fetch_add(1, Ordering::SeqCst);

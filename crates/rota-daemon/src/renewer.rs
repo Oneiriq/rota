@@ -84,7 +84,14 @@ impl CertRenewer {
       .append_event(renewal_id, EventKind::CsrGenerated, None)
       .await?;
 
-    let challenges = bundle.ca.submit(&bundle.config.domains, &csr_pem).await?;
+    let challenges = bundle
+      .ca
+      .submit(
+        &bundle.config.domains,
+        &csr_pem,
+        bundle.dcv.supported_kinds(),
+      )
+      .await?;
     self
       .audit
       .append_event(

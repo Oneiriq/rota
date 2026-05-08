@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
-use rota_core::backend::{DcvBackend, DcvChallenge};
+use rota_core::backend::{ChallengeKind, DcvBackend, DcvChallenge};
 use rota_core::secrets::redact;
 use rota_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -162,14 +162,16 @@ impl CloudflareDcv {
   }
 }
 
+const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01];
+
 #[async_trait]
 impl DcvBackend for CloudflareDcv {
   fn name(&self) -> &str {
     "cloudflare"
   }
 
-  fn supports(&self, challenge: &DcvChallenge) -> bool {
-    matches!(challenge, DcvChallenge::Dns01 { .. })
+  fn supported_kinds(&self) -> &[ChallengeKind] {
+    SUPPORTED
   }
 
   async fn publish(&self, challenge: &DcvChallenge) -> Result<()> {

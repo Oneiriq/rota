@@ -17,6 +17,7 @@ pub mod k8s;
 pub mod namecheap;
 pub mod nginx;
 pub mod webhook;
+pub mod webroot;
 
 use std::sync::Arc;
 
@@ -37,6 +38,7 @@ use k8s::K8sSecretInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapDcv};
 use nginx::NginxInstall;
 use webhook::{WebhookAlert, WebhookAlertParams};
+use webroot::WebrootDcv;
 
 /// All backends bound to one `CertConfig`. Owns the lifetime of the
 /// trait objects so the scheduler can hand them around freely.
@@ -168,6 +170,7 @@ fn build_dcv(
       })?;
       Ok(Arc::new(CloudflareDcv::new(Arc::clone(client))))
     }
+    DcvSpec::Webroot { directory } => Ok(Arc::new(WebrootDcv::new(directory.clone()))),
   }
 }
 

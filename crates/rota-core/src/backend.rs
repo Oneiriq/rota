@@ -32,6 +32,24 @@ pub struct IssuedCert {
   pub chain_pem: String,
 }
 
+/// Discriminant for a [`DcvChallenge`]: the bare kind without a
+/// payload. Lets backends advertise which kinds they support and
+/// lets the renewer hint at the CA's challenge-type selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChallengeKind {
+  Dns01,
+  Http01,
+}
+
+impl ChallengeKind {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Dns01 => "dns-01",
+      Self::Http01 => "http-01",
+    }
+  }
+}
+
 /// A domain-control-validation challenge the CA wants satisfied.
 /// Tagged enum so the renewer can dispatch each challenge to a DCV
 /// backend that supports its kind.
@@ -67,13 +85,20 @@ pub enum DcvChallenge {
 }
 
 impl DcvChallenge {
+  /// Discriminant of this challenge, payload-stripped. Useful for
+  /// matching against `DcvBackend::supported_kinds()` without moving
+  /// the enum around.
+  pub fn kind(&self) -> ChallengeKind {
+    match self {
+      Self::Dns01 { .. } => ChallengeKind::Dns01,
+      Self::Http01 { .. } => ChallengeKind::Http01,
+    }
+  }
+
   /// Stable short identifier for the challenge kind, suitable for
   /// audit log fields and error messages.
   pub fn kind_str(&self) -> &'static str {
-    match self {
-      Self::Dns01 { .. } => "dns-01",
-      Self::Http01 { .. } => "http-01",
-    }
+    self.kind().as_str()
   }
 
   /// Short label identifying *what* this challenge is for, for
@@ -97,13 +122,26 @@ pub trait CABackend: Send + Sync {
   /// challenges the caller must satisfy via the DCV backend before
   /// the CA will sign.
   ///
+  /// `preferred_kinds` is a hint from the configured DCV backend
+  /// about which challenge types it can satisfy, in preference
+  /// order. CAs that offer a choice (ACME) walk the list and pick
+  /// the first kind on offer; CAs that only support one kind
+  /// (Namecheap reissue) ignore the hint and return whatever they
+  /// natively produce. The renewer's `supports()` preflight catches
+  /// any actual mismatch before publish runs.
+  ///
   /// Single-challenge CAs (Namecheap reissue, anything that folds
   /// SAN authorizations into one record) return a single-element
   /// vec. ACME and friends return one challenge per authorization
   /// (typically one per SAN domain). The caller publishes every
   /// element via `DcvBackend::publish` before calling
   /// `await_issuance`, and removes every element afterwards.
-  async fn submit(&self, domains: &[String], csr_pem: &str) -> Result<Vec<DcvChallenge>>;
+  async fn submit(
+    &self,
+    domains: &[String],
+    csr_pem: &str,
+    preferred_kinds: &[ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>>;
 
   /// Poll the CA until the cert is signed or a timeout/error occurs.
   /// Called after the DCV backend has published every challenge.
@@ -119,10 +157,20 @@ pub trait DcvBackend: Send + Sync {
   /// Stable identifier for this backend.
   fn name(&self) -> &str;
 
+  /// Challenge kinds this backend can solve, in preference order.
+  /// The renewer passes this list to `CABackend::submit` so CAs
+  /// that offer a choice (ACME) can pick a kind the configured
+  /// solver actually supports.
+  fn supported_kinds(&self) -> &[ChallengeKind];
+
   /// Whether this backend can satisfy the given challenge. The
   /// renewer fast-fails if the configured backend does not support
-  /// the challenge kind the CA returned.
-  fn supports(&self, challenge: &DcvChallenge) -> bool;
+  /// the challenge kind the CA returned. Default implementation
+  /// matches against `supported_kinds()`; override only if a
+  /// backend needs richer per-challenge logic (e.g. domain scope).
+  fn supports(&self, challenge: &DcvChallenge) -> bool {
+    self.supported_kinds().contains(&challenge.kind())
+  }
 
   /// Publish the challenge response. Idempotent: if the response is
   /// already in place, treat as success.

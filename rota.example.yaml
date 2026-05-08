@@ -53,6 +53,13 @@ certs:
       ssl_id: 12345678
     dcv:
       kind: namecheap
+      # Other dcv kinds:
+      #   cloudflare: { kind: cloudflare }                          # DNS-01 via Cloudflare token
+      #   webroot:    { kind: webroot, directory: /var/www/example } # HTTP-01 via existing webserver
+      # Webroot drops the challenge token at <directory>/.well-known/
+      # acme-challenge/<token>; your webserver must serve the
+      # `<directory>` over plain HTTP on port 80 so the CA's challenge
+      # fetch resolves. Used for HTTP-01 with the ACME CA backend.
     install:
       kind: dsm
       description: My Public Site

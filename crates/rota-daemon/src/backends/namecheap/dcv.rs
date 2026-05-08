@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use rota_core::backend::{DcvBackend, DcvChallenge};
+use rota_core::backend::{ChallengeKind, DcvBackend, DcvChallenge};
 use rota_core::{Error, Result};
 use tracing::{debug, info};
 
@@ -62,14 +62,16 @@ impl NamecheapDcv {
   }
 }
 
+const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01];
+
 #[async_trait]
 impl DcvBackend for NamecheapDcv {
   fn name(&self) -> &str {
     "namecheap"
   }
 
-  fn supports(&self, challenge: &DcvChallenge) -> bool {
-    matches!(challenge, DcvChallenge::Dns01 { .. })
+  fn supported_kinds(&self) -> &[ChallengeKind] {
+    SUPPORTED
   }
 
   async fn publish(&self, challenge: &DcvChallenge) -> Result<()> {

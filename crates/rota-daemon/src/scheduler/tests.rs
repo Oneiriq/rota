@@ -27,7 +27,12 @@ impl CABackend for OkCa {
   fn name(&self) -> &str {
     "ok-ca"
   }
-  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    _domains: &[String],
+    _csr_pem: &str,
+    _preferred_kinds: &[rota_core::backend::ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     self.submit_calls.fetch_add(1, Ordering::SeqCst);
     Ok(vec![DcvChallenge::Dns01 {
       record_name: "_acme-challenge.example.com".to_owned(),
@@ -51,8 +56,8 @@ impl DcvBackend for OkDcv {
   fn name(&self) -> &str {
     "ok-dcv"
   }
-  fn supports(&self, _: &DcvChallenge) -> bool {
-    true
+  fn supported_kinds(&self) -> &[rota_core::backend::ChallengeKind] {
+    &[rota_core::backend::ChallengeKind::Dns01]
   }
   async fn publish(&self, _: &DcvChallenge) -> Result<()> {
     Ok(())
@@ -219,7 +224,12 @@ async fn cooldown_blocks_immediate_retry_after_failure() {
     fn name(&self) -> &str {
       "failing-ca"
     }
-    async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
+    async fn submit(
+      &self,
+      _: &[String],
+      _: &str,
+      _: &[rota_core::backend::ChallengeKind],
+    ) -> Result<Vec<DcvChallenge>> {
       Ok(vec![DcvChallenge::Dns01 {
         record_name: "_acme-challenge.example.com".to_owned(),
         record_value: "x".to_owned(),
@@ -322,7 +332,12 @@ async fn alert_dispatched_on_renewal_failure() {
     fn name(&self) -> &str {
       "failing-ca"
     }
-    async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
+    async fn submit(
+      &self,
+      _: &[String],
+      _: &str,
+      _: &[rota_core::backend::ChallengeKind],
+    ) -> Result<Vec<DcvChallenge>> {
       Ok(vec![DcvChallenge::Dns01 {
         record_name: "_acme-challenge.example.com".to_owned(),
         record_value: "x".to_owned(),
