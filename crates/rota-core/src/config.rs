@@ -401,9 +401,18 @@ certs: []
         assert_eq!(*smtp_port, 587);
         assert!(matches!(tls, SmtpTls::Starttls));
         assert_eq!(username, "alerts@example.com");
-        assert_eq!(password_file, &PathBuf::from("/etc/rota/secrets/smtp.password"));
+        assert_eq!(
+          password_file,
+          &PathBuf::from("/etc/rota/secrets/smtp.password")
+        );
         assert_eq!(from, "rota@example.com");
-        assert_eq!(to, &vec!["oncall@example.com".to_owned(), "secondary@example.com".to_owned()]);
+        assert_eq!(
+          to,
+          &vec![
+            "oncall@example.com".to_owned(),
+            "secondary@example.com".to_owned()
+          ]
+        );
       }
     }
   }
