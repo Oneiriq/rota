@@ -17,6 +17,8 @@ use rota_core::config::{AuditSpec, RotaConfig};
 use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
 use rota_daemon::cluster::NoOpCoordinator;
+#[cfg(feature = "surrealdb")]
+use rota_daemon::cluster::SurrealClusterCoordinator;
 use rota_daemon::dashboard::{self, DashboardState};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
@@ -71,7 +73,7 @@ async fn main() -> Result<()> {
   let audit = build_audit(&config).await?;
   info!(backend = %audit.name(), "audit store ready");
 
-  let cluster = build_cluster(&config)?;
+  let cluster = build_cluster(&config).await?;
   info!(
     coordinator = %cluster.name(),
     node = %cluster.node_id(),
@@ -144,23 +146,51 @@ async fn main() -> Result<()> {
   Ok(())
 }
 
-/// Construct the cluster coordinator from config. This PR ships only
-/// the NoOp coordinator (single-node, always leader); the SurrealDB
-/// coordinator that drives real federation lands alongside cert
-/// distribution in the follow-up PR. We still parse `cluster.enabled`
-/// here so operators get a clear "not yet implemented" error instead
-/// of silent single-node behaviour when their config requested a
-/// cluster.
-fn build_cluster(config: &RotaConfig) -> Result<Arc<dyn ClusterCoordinator>> {
+/// Construct the cluster coordinator from config. Single-node
+/// deployments (no `cluster:` block, or `enabled: false`) get the
+/// NoOp coordinator that always reports leadership. Clustered
+/// deployments (`enabled: true`) require a SurrealDB audit backend
+/// because the lock state lives in the same database; we error out
+/// loudly otherwise rather than silently degrading.
+async fn build_cluster(config: &RotaConfig) -> Result<Arc<dyn ClusterCoordinator>> {
   match &config.cluster {
     None => Ok(Arc::new(NoOpCoordinator::new("local".to_owned()))),
     Some(spec) if !spec.enabled => Ok(Arc::new(NoOpCoordinator::new(spec.node_id.clone()))),
-    Some(spec) => Err(anyhow::anyhow!(
-      "cluster.enabled = true (node_id = {}) but this build does not yet ship a clustering coordinator; \
-       upgrade to a build that lands cert distribution to followers",
-      spec.node_id,
-    )),
+    Some(spec) => build_surreal_cluster(config, spec).await,
   }
+}
+
+#[cfg(feature = "surrealdb")]
+async fn build_surreal_cluster(
+  config: &RotaConfig,
+  spec: &rota_core::config::ClusterSpec,
+) -> Result<Arc<dyn ClusterCoordinator>> {
+  let audit_spec = match &config.audit {
+    Some(s @ AuditSpec::Surrealdb { .. }) => s,
+    _ => {
+      return Err(anyhow::anyhow!(
+        "cluster.enabled = true requires a surrealdb audit backend (the lock lives in the same database)",
+      ));
+    }
+  };
+  let coordinator = SurrealClusterCoordinator::from_audit_spec(
+    audit_spec,
+    spec.node_id.clone(),
+    Duration::from_secs(spec.lease_seconds),
+  )
+  .await?;
+  Ok(Arc::new(coordinator))
+}
+
+#[cfg(not(feature = "surrealdb"))]
+async fn build_surreal_cluster(
+  _config: &RotaConfig,
+  spec: &rota_core::config::ClusterSpec,
+) -> Result<Arc<dyn ClusterCoordinator>> {
+  Err(anyhow::anyhow!(
+    "cluster.enabled = true (node_id = {}) requires the `surrealdb` feature, which this build was compiled without",
+    spec.node_id,
+  ))
 }
 
 async fn build_audit(config: &RotaConfig) -> Result<Arc<dyn AuditStore>> {

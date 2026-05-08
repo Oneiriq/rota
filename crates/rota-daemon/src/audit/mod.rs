@@ -18,7 +18,7 @@
 mod schema;
 mod sqlite;
 #[cfg(feature = "surrealdb")]
-mod surrealdb;
+pub mod surrealdb;
 mod types;
 
 pub use sqlite::SqliteAuditStore;

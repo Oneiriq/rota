@@ -18,3 +18,12 @@ DEFINE FIELD IF NOT EXISTS ts ON TABLE renewal_event TYPE datetime;
 DEFINE FIELD IF NOT EXISTS kind ON TABLE renewal_event TYPE string;
 DEFINE FIELD IF NOT EXISTS detail ON TABLE renewal_event TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_renewal_event_renewal_id ON TABLE renewal_event COLUMNS renewal_id;
+
+-- Cluster federation lock. Singleton row at cluster_lock:singleton.
+-- Coordinators acquire by writing themselves as `holder` when the
+-- existing row is missing, expired, or already held by them; refresh
+-- by writing again before `expires_at` lapses.
+DEFINE TABLE IF NOT EXISTS cluster_lock SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS holder ON TABLE cluster_lock TYPE string;
+DEFINE FIELD IF NOT EXISTS acquired_at ON TABLE cluster_lock TYPE datetime;
+DEFINE FIELD IF NOT EXISTS expires_at ON TABLE cluster_lock TYPE datetime;
