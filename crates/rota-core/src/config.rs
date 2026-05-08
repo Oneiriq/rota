@@ -31,6 +31,10 @@ pub struct RotaConfig {
   /// Cloudflare as its registrar.
   #[serde(default)]
   pub cloudflare: Option<CloudflareAccount>,
+  /// Account-wide ACME directory + account material. Required if any
+  /// cert names ACME as its CA.
+  #[serde(default)]
+  pub acme: Option<AcmeAccount>,
   pub certs: Vec<CertConfig>,
 }
 
@@ -138,6 +142,43 @@ pub struct CloudflareAccount {
   pub api_token_file: PathBuf,
 }
 
+/// Account-wide ACME directory + account material.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcmeAccount {
+  /// ACME directory URL. Common values:
+  /// `https://acme-v02.api.letsencrypt.org/directory` (Let's Encrypt prod),
+  /// `https://acme-staging-v02.api.letsencrypt.org/directory` (Let's Encrypt staging),
+  /// `https://acme.zerossl.com/v2/DV90` (ZeroSSL),
+  /// `https://api.buypass.com/acme/directory` (BuyPass).
+  pub directory_url: String,
+  /// Email surfaced to the CA on account registration. Optional but
+  /// strongly recommended; CAs use it to send revocation and expiry
+  /// notices.
+  #[serde(default)]
+  pub contact_email: Option<String>,
+  /// Where the JWS account key + URL are persisted between daemon
+  /// restarts. Treat like a private key (mode 0o600). If missing,
+  /// rota registers a fresh account on first run and writes the
+  /// credentials here.
+  pub account_credentials_file: PathBuf,
+  /// External Account Binding for CAs that require it (ZeroSSL,
+  /// some commercial ACME deployments). Skip for Let's Encrypt and
+  /// BuyPass.
+  #[serde(default)]
+  pub external_account_binding: Option<EabConfig>,
+}
+
+/// External Account Binding material. The CA assigns a key id and
+/// HMAC key out-of-band; rota uses both to bind a new ACME account
+/// to an existing customer record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EabConfig {
+  /// Key id the CA gave you.
+  pub kid: String,
+  /// File containing the base64url-encoded HMAC key.
+  pub hmac_key_file: PathBuf,
+}
+
 /// Audit log backend selector. SQLite is the default if the
 /// top-level `audit:` block is omitted; rota's own daemon owns the
 /// SQLite file with no external service to provision. SurrealDB is
@@ -179,6 +220,10 @@ pub enum CaSpec {
     /// Numeric SSL ID from the Namecheap dashboard.
     ssl_id: u64,
   },
+  /// ACME (RFC 8555) issuance — Let's Encrypt, ZeroSSL, BuyPass,
+  /// any directory that speaks the spec. Account creds come from
+  /// the top-level `acme` block.
+  Acme,
 }
 
 /// Registrar-backend selector.
@@ -250,6 +295,7 @@ mod tests {
     assert_eq!(nc.client_ip, "192.0.2.1");
     match cert.ca {
       CaSpec::Namecheap { ssl_id } => assert_eq!(ssl_id, 12345678),
+      _ => panic!("expected namecheap ca"),
     }
     assert!(matches!(cert.registrar, RegistrarSpec::Namecheap));
     match &cert.install {
