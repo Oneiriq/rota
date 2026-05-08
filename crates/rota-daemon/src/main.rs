@@ -15,6 +15,7 @@ use clap::Parser;
 use rota_core::config::{AuditSpec, RotaConfig};
 use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
+use rota_daemon::dashboard::{self, DashboardState};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
 use rota_daemon::socket::SocketServer;
@@ -87,19 +88,32 @@ async fn main() -> Result<()> {
   );
   let socket_path = config.daemon.socket_path.clone();
 
+  let dashboard_state = DashboardState {
+    bundles: Arc::clone(&bundles),
+    audit: Arc::clone(&audit),
+    renewer: Arc::clone(&renewer),
+  };
+  let dashboard_addr = config.daemon.listen_addr.clone();
+
   let scheduler_task = tokio::spawn(scheduler.run());
   let socket_task = tokio::spawn(async move {
     if let Err(err) = socket_server.serve(socket_path).await {
       tracing::error!(error = %err, "control socket failed");
     }
   });
+  let dashboard_task = tokio::spawn(async move {
+    if let Err(err) = dashboard::serve(dashboard_state, &dashboard_addr).await {
+      tracing::error!(error = %err, "dashboard failed");
+    }
+  });
 
-  // Either task running to completion is unexpected (both should
-  // loop forever). When one returns, log and exit; the supervisor
+  // Any task returning is unexpected (all three should loop
+  // forever). When one returns, log and exit; the supervisor
   // (systemd, Container Manager) restarts the daemon.
   tokio::select! {
     _ = scheduler_task => tracing::warn!("scheduler task exited"),
     _ = socket_task => tracing::warn!("socket task exited"),
+    _ = dashboard_task => tracing::warn!("dashboard task exited"),
   }
   Ok(())
 }
