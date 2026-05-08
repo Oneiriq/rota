@@ -34,6 +34,7 @@ use tracing::{info, warn};
 
 use crate::audit::RenewalStatus;
 use crate::backends::CertBackends;
+use crate::metrics;
 use crate::renewer::CertRenewer;
 
 /// Knobs the scheduler reads. Built from `config::DaemonConfig` in
@@ -132,7 +133,12 @@ impl Scheduler {
       }
       Ok(Some(pem)) => match parse_not_after(&pem) {
         Ok(not_after) => {
-          let days_left = (not_after - Utc::now()).num_days();
+          let delta = not_after - Utc::now();
+          let days_left = delta.num_days();
+          // Gauge tracks fractional days so a cert that expires in
+          // 12 hours shows up as 0.5 rather than rounding to 0.
+          let days_left_f = (delta.num_seconds() as f64) / 86_400.0;
+          metrics::set_days_until_expiry(&bundle.config.id, days_left_f);
           let due = days_left <= self.config.threshold_days;
           if !due {
             tracing::debug!(
@@ -201,6 +207,13 @@ impl Scheduler {
       }
     }
 
+    let outcome = if result.is_ok() {
+      metrics::OUTCOME_SUCCESS
+    } else {
+      metrics::OUTCOME_FAILURE
+    };
+    metrics::record_renewal_attempt(&bundle.config.id, outcome);
+
     if let Some(msg) = failure_msg {
       self.dispatch_failure(&bundle.config.id, &msg).await;
     }
@@ -220,14 +233,19 @@ impl Scheduler {
       timestamp: Utc::now(),
     };
     for alert in self.alerts.iter() {
-      if let Err(err) = alert.dispatch(&event).await {
-        tracing::error!(
-          backend = %alert.name(),
-          cert = %cert_id,
-          error = %err,
-          "alert dispatch failed"
-        );
-      }
+      let outcome = match alert.dispatch(&event).await {
+        Ok(()) => metrics::OUTCOME_SUCCESS,
+        Err(err) => {
+          tracing::error!(
+            backend = %alert.name(),
+            cert = %cert_id,
+            error = %err,
+            "alert dispatch failed"
+          );
+          metrics::OUTCOME_FAILURE
+        }
+      };
+      metrics::record_alert_dispatch(alert.name(), outcome);
     }
   }
 }

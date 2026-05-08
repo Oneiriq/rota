@@ -92,6 +92,7 @@ fn router(state: DashboardState) -> Router {
   Router::new()
     .route("/", get(super::index))
     .route("/cert/:id", get(super::cert_detail))
+    .route("/metrics", get(super::metrics_endpoint))
     .with_state(state)
 }
 
@@ -154,6 +155,41 @@ async fn cert_detail_returns_404_for_unknown_cert() {
   assert_eq!(resp.status(), StatusCode::NOT_FOUND);
   let body = body_string(resp).await;
   assert!(body.contains("unknown cert"));
+}
+
+#[tokio::test]
+async fn metrics_endpoint_returns_prometheus_text_format() {
+  // Touch each metric so the endpoint emits at least the metadata
+  // for them. LazyLock is per-process so this runs once across the
+  // test binary regardless of test order.
+  crate::metrics::record_renewal_attempt("dashboard-metrics-test", crate::metrics::OUTCOME_SUCCESS);
+
+  let state = build_router_state().await;
+  let app = router(state);
+  let resp = app
+    .oneshot(
+      HttpRequest::builder()
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(resp.status(), StatusCode::OK);
+  let ct = resp
+    .headers()
+    .get("content-type")
+    .expect("metrics response must set content-type")
+    .to_str()
+    .unwrap()
+    .to_owned();
+  assert!(
+    ct.starts_with("text/plain"),
+    "expected text/plain content-type, got: {ct}"
+  );
+  let body = body_string(resp).await;
+  assert!(body.contains("rota_renewal_attempts_total"));
+  assert!(body.contains(r#"cert="dashboard-metrics-test""#));
 }
 
 #[tokio::test]

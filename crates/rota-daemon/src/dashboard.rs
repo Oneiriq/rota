@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -30,6 +30,7 @@ use tracing::{info, warn};
 
 use crate::audit::AuditStore;
 use crate::backends::CertBackends;
+use crate::metrics;
 use crate::renewer::CertRenewer;
 
 #[derive(Clone)]
@@ -54,6 +55,7 @@ pub async fn serve(state: DashboardState, listen: &str) -> Result<()> {
     .route("/", get(index))
     .route("/cert/:id", get(cert_detail))
     .route("/cert/:id/renew", post(renew_cert))
+    .route("/metrics", get(metrics_endpoint))
     .with_state(state);
 
   axum::serve(listener, app)
@@ -90,7 +92,18 @@ async fn cert_detail(State(state): State<DashboardState>, Path(id): Path<String>
     .into_response()
 }
 
-/// POST /cert/{id}/renew — kick a manual renewal and redirect back.
+/// GET /metrics: Prometheus text-format scrape endpoint. Same axum
+/// server as the dashboard so operators get a single port to expose
+/// behind their reverse proxy.
+async fn metrics_endpoint() -> Response {
+  (
+    [(header::CONTENT_TYPE, metrics::CONTENT_TYPE)],
+    metrics::gather_text(),
+  )
+    .into_response()
+}
+
+/// POST /cert/{id}/renew: kick a manual renewal and redirect back.
 async fn renew_cert(State(state): State<DashboardState>, Path(id): Path<String>) -> Response {
   let Some(bundle) = state.bundles.iter().find(|b| b.config.id == id) else {
     return not_found(&id);
