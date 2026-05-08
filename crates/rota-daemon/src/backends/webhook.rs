@@ -49,7 +49,7 @@ impl std::fmt::Debug for WebhookAlert {
         &self.bearer_token.as_ref().map(|_| "<redacted>"),
       )
       .finish_non_exhaustive()
-    }
+  }
 }
 
 pub struct WebhookAlertParams<'a> {
