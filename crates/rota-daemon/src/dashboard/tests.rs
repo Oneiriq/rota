@@ -20,7 +20,7 @@ impl CABackend for StubCa {
   fn name(&self) -> &str {
     "ca"
   }
-  async fn submit(&self, _: &[String], _: &str) -> Result<DcvChallenge> {
+  async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
     unreachable!()
   }
   async fn await_issuance(&self, _: &[String]) -> Result<IssuedCert> {

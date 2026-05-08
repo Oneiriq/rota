@@ -23,13 +23,13 @@ impl CABackend for OkCa {
   fn name(&self) -> &str {
     "ok-ca"
   }
-  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<DcvChallenge> {
+  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<Vec<DcvChallenge>> {
     self.submit_calls.fetch_add(1, Ordering::SeqCst);
-    Ok(DcvChallenge {
+    Ok(vec![DcvChallenge {
       record_name: "_acme-challenge.example.com".to_owned(),
       record_value: "x".to_owned(),
       ttl: 60,
-    })
+    }])
   }
   async fn await_issuance(&self, _domains: &[String]) -> Result<IssuedCert> {
     Ok(IssuedCert {
@@ -212,12 +212,12 @@ async fn cooldown_blocks_immediate_retry_after_failure() {
     fn name(&self) -> &str {
       "failing-ca"
     }
-    async fn submit(&self, _: &[String], _: &str) -> Result<DcvChallenge> {
-      Ok(DcvChallenge {
+    async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
+      Ok(vec![DcvChallenge {
         record_name: "_acme-challenge.example.com".to_owned(),
         record_value: "x".to_owned(),
         ttl: 60,
-      })
+      }])
     }
     async fn await_issuance(&self, _: &[String]) -> Result<IssuedCert> {
       Err(rota_core::Error::Ca("ca down".to_owned()))
