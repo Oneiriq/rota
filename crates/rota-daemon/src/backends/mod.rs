@@ -10,20 +10,23 @@
 pub mod acme;
 pub mod cloudflare;
 pub mod dsm;
+pub mod email;
 pub mod filesystem;
 pub mod namecheap;
 
 use std::sync::Arc;
 
-use rota_core::backend::{CABackend, InstallBackend, RegistrarBackend};
+use rota_core::backend::{AlertBackend, CABackend, InstallBackend, RegistrarBackend};
 use rota_core::config::{
-  CaSpec, CertConfig, CloudflareAccount, InstallSpec, NamecheapAccount, RegistrarSpec, RotaConfig,
+  AlertSpec, CaSpec, CertConfig, CloudflareAccount, InstallSpec, NamecheapAccount, RegistrarSpec,
+  RotaConfig,
 };
 use rota_core::{Error, Result};
 
 use acme::AcmeCa;
 use cloudflare::{CloudflareClient, CloudflareRegistrar};
 use dsm::DsmInstall;
+use email::{EmailAlert, EmailAlertParams};
 use filesystem::FilesystemInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
 
@@ -168,5 +171,49 @@ fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn
       directory.clone(),
       cert.id.clone(),
     )))),
+  }
+}
+
+/// Build daemon-wide alert sinks from `RotaConfig::alerts`. Empty
+/// input returns an empty vec (silent operation).
+pub fn build_alerts(specs: &[AlertSpec]) -> Result<Vec<Arc<dyn AlertBackend>>> {
+  let mut out = Vec::with_capacity(specs.len());
+  for spec in specs {
+    out.push(build_alert(spec)?);
+  }
+  Ok(out)
+}
+
+fn build_alert(spec: &AlertSpec) -> Result<Arc<dyn AlertBackend>> {
+  match spec {
+    AlertSpec::Email {
+      smtp_host,
+      smtp_port,
+      tls,
+      username,
+      password_file,
+      from,
+      to,
+    } => {
+      let password = std::fs::read_to_string(password_file)
+        .map_err(|e| {
+          Error::ConfigInvalid(format!(
+            "email alert password_file {}: {e}",
+            password_file.display()
+          ))
+        })?
+        .trim()
+        .to_owned();
+      let alert = EmailAlert::new(EmailAlertParams {
+        smtp_host: smtp_host.as_str(),
+        smtp_port: *smtp_port,
+        tls: *tls,
+        username: username.as_str(),
+        password: &password,
+        from: from.as_str(),
+        to,
+      })?;
+      Ok(Arc::new(alert))
+    }
   }
 }

@@ -36,6 +36,7 @@ axum = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 instant-acme = { workspace = true }
+lettre = { workspace = true }
 maud = { workspace = true }
 pem = { workspace = true }
 quick-xml = { workspace = true }

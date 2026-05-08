@@ -26,7 +26,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use rota_core::backend::{AlertBackend, AlertEvent, AlertKind};
 use rota_core::cert::parse_not_after;
+use rota_core::secrets::redact;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -53,6 +55,7 @@ struct CertState {
 pub struct Scheduler {
   bundles: Arc<Vec<CertBackends>>,
   renewer: Arc<CertRenewer>,
+  alerts: Arc<Vec<Arc<dyn AlertBackend>>>,
   config: SchedulerConfig,
   state: Arc<Mutex<HashMap<String, CertState>>>,
 }
@@ -66,9 +69,18 @@ impl Scheduler {
     Self {
       bundles,
       renewer,
+      alerts: Arc::new(Vec::new()),
       config,
       state: Arc::new(Mutex::new(HashMap::new())),
     }
+  }
+
+  /// Attach a list of alert sinks. Every renewal failure dispatches
+  /// to every entry. Builder-style so existing call sites that don't
+  /// configure alerts keep working unchanged.
+  pub fn with_alerts(mut self, alerts: Arc<Vec<Arc<dyn AlertBackend>>>) -> Self {
+    self.alerts = alerts;
+    self
   }
 
   /// Long-running loop. Returns only on shutdown.
@@ -171,15 +183,51 @@ impl Scheduler {
 
   async fn attempt_renewal(&self, bundle: &CertBackends) {
     let result = self.renewer.run(bundle).await;
-    let mut state = self.state.lock().await;
-    let s = state.entry(bundle.config.id.clone()).or_default();
-    s.last_attempt_at = Some(Utc::now());
-    if result.is_ok() {
-      s.last_outcome = Some(RenewalStatus::Success);
-      s.consecutive_failures = 0;
-    } else {
-      s.last_outcome = Some(RenewalStatus::Failed);
-      s.consecutive_failures = s.consecutive_failures.saturating_add(1);
+    let failure_msg = match &result {
+      Ok(()) => None,
+      Err(err) => Some(redact(&err.to_string())),
+    };
+
+    {
+      let mut state = self.state.lock().await;
+      let s = state.entry(bundle.config.id.clone()).or_default();
+      s.last_attempt_at = Some(Utc::now());
+      if result.is_ok() {
+        s.last_outcome = Some(RenewalStatus::Success);
+        s.consecutive_failures = 0;
+      } else {
+        s.last_outcome = Some(RenewalStatus::Failed);
+        s.consecutive_failures = s.consecutive_failures.saturating_add(1);
+      }
+    }
+
+    if let Some(msg) = failure_msg {
+      self.dispatch_failure(&bundle.config.id, &msg).await;
+    }
+  }
+
+  /// Fan a `RenewalFailed` event out to every configured alert sink.
+  /// Per-sink errors are logged but do not propagate; a flaky alert
+  /// backend cannot be allowed to break the renewal pipeline outcome.
+  async fn dispatch_failure(&self, cert_id: &str, message: &str) {
+    if self.alerts.is_empty() {
+      return;
+    }
+    let event = AlertEvent {
+      cert_id: cert_id.to_owned(),
+      kind: AlertKind::RenewalFailed,
+      message: message.to_owned(),
+      timestamp: Utc::now(),
+    };
+    for alert in self.alerts.iter() {
+      if let Err(err) = alert.dispatch(&event).await {
+        tracing::error!(
+          backend = %alert.name(),
+          cert = %cert_id,
+          error = %err,
+          "alert dispatch failed"
+        );
+      }
     }
   }
 }

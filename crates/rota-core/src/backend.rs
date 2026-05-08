@@ -1,18 +1,23 @@
 //! Backend traits.
 //!
-//! Three independent axes:
+//! Four independent axes:
 //!
 //! 1. **CA backend**: who signs the cert.
 //! 2. **Registrar backend**: where DNS-01 TXT records are published
 //!    for domain-control validation.
 //! 3. **Install backend**: where the issued cert + chain land so the
 //!    system serving the domain can pick them up.
+//! 4. **Alert backend**: where lifecycle notifications go (renewal
+//!    failures today, more event kinds layer on later).
 //!
-//! A `CertConfig` picks one of each; the renewal pipeline composes
-//! them generically. Adding support for a new CA, registrar, or host
-//! is a single trait impl, not a fork of the renewal logic.
+//! A `CertConfig` picks one of CA + registrar + install; alert
+//! backends are daemon-wide and fan out from a single dispatch list.
+//! The renewal pipeline composes them generically. Adding support for
+//! a new CA, registrar, host, or alert sink is a single trait impl,
+//! not a fork of the renewal logic.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::Result;
 
@@ -103,4 +108,49 @@ pub trait InstallBackend: Send + Sync {
   async fn current_cert_pem(&self, _cert_id: &str) -> Result<Option<String>> {
     Ok(None)
   }
+}
+
+/// Lifecycle event the daemon wants to surface to one or more alert
+/// sinks. The set of kinds is intentionally small for v0.4; new
+/// variants layer on as new event sources land in the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertKind {
+  /// A renewal attempt failed. Carries the redacted error string in
+  /// [`AlertEvent::message`].
+  RenewalFailed,
+}
+
+impl AlertKind {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::RenewalFailed => "renewal_failed",
+    }
+  }
+}
+
+/// One alert payload, fanned out to every configured `AlertBackend`.
+#[derive(Debug, Clone)]
+pub struct AlertEvent {
+  /// Cert this event is about.
+  pub cert_id: String,
+  /// Event classification.
+  pub kind: AlertKind,
+  /// Human-readable detail. Already redacted by the caller.
+  pub message: String,
+  /// When the event was generated.
+  pub timestamp: DateTime<Utc>,
+}
+
+/// Sink for lifecycle notifications. Implementations dispatch one
+/// event at a time; the scheduler fans an event out to every
+/// configured sink concurrently and swallows individual failures
+/// (a flaky alert sink must not break the renewal pipeline).
+#[async_trait]
+pub trait AlertBackend: Send + Sync {
+  /// Stable identifier for this backend (for logs).
+  fn name(&self) -> &str;
+
+  /// Deliver `event`. Returning `Err` is logged but does not affect
+  /// the renewal pipeline outcome.
+  async fn dispatch(&self, event: &AlertEvent) -> Result<()>;
 }

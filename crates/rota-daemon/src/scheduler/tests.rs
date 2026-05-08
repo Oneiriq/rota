@@ -3,9 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rota_core::backend::{CABackend, DcvChallenge, InstallBackend, IssuedCert, RegistrarBackend};
+use rota_core::backend::{
+  AlertBackend, AlertEvent, AlertKind, CABackend, DcvChallenge, InstallBackend, IssuedCert,
+  RegistrarBackend,
+};
 use rota_core::config::{CaSpec, CertConfig, InstallSpec, RegistrarSpec};
 use rota_core::Result;
+use tokio::sync::Mutex as TokioMutex;
 
 use super::*;
 use crate::audit::SqliteAuditStore;
@@ -286,6 +290,127 @@ async fn cooldown_clears_after_success() {
   install.set_pem(None);
   sched.sweep().await;
   assert_eq!(install.install_calls.load(Ordering::SeqCst), 2);
+}
+
+/// Alert sink that captures every dispatched event for assertion.
+#[derive(Default)]
+struct RecordingAlert {
+  events: TokioMutex<Vec<AlertEvent>>,
+}
+
+#[async_trait]
+impl AlertBackend for RecordingAlert {
+  fn name(&self) -> &str {
+    "recording"
+  }
+  async fn dispatch(&self, event: &AlertEvent) -> Result<()> {
+    self.events.lock().await.push(event.clone());
+    Ok(())
+  }
+}
+
+#[tokio::test]
+async fn alert_dispatched_on_renewal_failure() {
+  // Same failing-CA shape as the cooldown test: submit succeeds, but
+  // await_issuance returns an error so the renewer reports failure.
+  struct FailingCa;
+  #[async_trait]
+  impl CABackend for FailingCa {
+    fn name(&self) -> &str {
+      "failing-ca"
+    }
+    async fn submit(&self, _: &[String], _: &str) -> Result<Vec<DcvChallenge>> {
+      Ok(vec![DcvChallenge {
+        record_name: "_acme-challenge.example.com".to_owned(),
+        record_value: "x".to_owned(),
+        ttl: 60,
+      }])
+    }
+    async fn await_issuance(&self, _: &[String]) -> Result<IssuedCert> {
+      Err(rota_core::Error::Ca("ca down".to_owned()))
+    }
+  }
+
+  let tmp = tempfile::tempdir().unwrap();
+  let audit = Arc::new(SqliteAuditStore::open_in_memory().await.unwrap());
+  let renewer = Arc::new(CertRenewer::new(
+    Arc::clone(&audit) as Arc<dyn crate::audit::AuditStore>
+  ));
+  let install = Arc::new(ProbedInstall::new(None));
+  let bundle = CertBackends {
+    config: cert_config("alert-fail", tmp.path().join("k.key")),
+    ca: Arc::new(FailingCa) as Arc<dyn CABackend>,
+    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    install: Some(Arc::clone(&install) as Arc<dyn InstallBackend>),
+  };
+  std::mem::forget(tmp);
+
+  let recorder = Arc::new(RecordingAlert::default());
+  let alerts: Arc<Vec<Arc<dyn AlertBackend>>> =
+    Arc::new(vec![Arc::clone(&recorder) as Arc<dyn AlertBackend>]);
+
+  let scheduler = Scheduler::new(
+    Arc::new(vec![bundle]),
+    renewer,
+    SchedulerConfig {
+      check_interval: Duration::from_secs(60),
+      threshold_days: 30,
+      failure_cooldown: Duration::from_secs(60),
+    },
+  )
+  .with_alerts(alerts);
+
+  scheduler.sweep().await;
+
+  let recorded = recorder.events.lock().await;
+  assert_eq!(recorded.len(), 1);
+  assert_eq!(recorded[0].cert_id, "alert-fail");
+  assert!(matches!(recorded[0].kind, AlertKind::RenewalFailed));
+  assert!(
+    !recorded[0].message.is_empty(),
+    "alert event must carry an error message"
+  );
+}
+
+#[tokio::test]
+async fn no_alert_dispatched_on_renewal_success() {
+  let install = Arc::new(ProbedInstall::new(None));
+  let recorder = Arc::new(RecordingAlert::default());
+  let alerts: Arc<Vec<Arc<dyn AlertBackend>>> =
+    Arc::new(vec![Arc::clone(&recorder) as Arc<dyn AlertBackend>]);
+
+  let tmp = tempfile::tempdir().unwrap();
+  let key_path = tmp.path().join("alert-ok.key");
+  let audit = Arc::new(SqliteAuditStore::open_in_memory().await.unwrap());
+  let renewer = Arc::new(CertRenewer::new(
+    Arc::clone(&audit) as Arc<dyn crate::audit::AuditStore>
+  ));
+  let ca = Arc::new(OkCa::default());
+  let bundle = CertBackends {
+    config: cert_config("alert-ok", key_path),
+    ca: Arc::clone(&ca) as Arc<dyn CABackend>,
+    registrar: Arc::new(OkRegistrar) as Arc<dyn RegistrarBackend>,
+    install: Some(Arc::clone(&install) as Arc<dyn InstallBackend>),
+  };
+  std::mem::forget(tmp);
+
+  let scheduler = Scheduler::new(
+    Arc::new(vec![bundle]),
+    renewer,
+    SchedulerConfig {
+      check_interval: Duration::from_secs(60),
+      threshold_days: 30,
+      failure_cooldown: Duration::from_secs(60),
+    },
+  )
+  .with_alerts(alerts);
+
+  scheduler.sweep().await;
+  assert_eq!(install.install_calls.load(Ordering::SeqCst), 1);
+  assert!(
+    recorder.events.lock().await.is_empty(),
+    "successful renewal must not emit a RenewalFailed alert"
+  );
 }
 
 #[tokio::test]

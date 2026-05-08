@@ -20,6 +20,21 @@ namecheap:
   username: your-namecheap-username
   client_ip: 192.0.2.1
 
+# Daemon-wide alert sinks. Every event fans out to every entry, so
+# you can mix (e.g.) email + webhook in one config. Omit this block
+# entirely for silent operation; renewal failures still hit the audit
+# log and the dashboard regardless.
+alerts:
+  - kind: email
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    tls: starttls            # starttls (587), implicit (465), or none
+    username: alerts@example.com
+    password_file: /etc/rota/secrets/smtp.password
+    from: rota@example.com
+    to:
+      - oncall@example.com
+
 certs:
   - id: example-public
     description: example.com marketing site
