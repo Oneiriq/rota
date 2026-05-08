@@ -60,6 +60,12 @@ async fn main() -> Result<()> {
     );
   }
 
+  let alerts = backends::build_alerts(&config.alerts)?;
+  for alert in &alerts {
+    info!(backend = %alert.name(), "alert sink bound");
+  }
+  let alerts = Arc::new(alerts);
+
   let audit = build_audit(&config).await?;
   info!(backend = %audit.name(), "audit store ready");
 
@@ -79,7 +85,8 @@ async fn main() -> Result<()> {
       // up as a real-world problem.
       failure_cooldown: interval,
     },
-  );
+  )
+  .with_alerts(Arc::clone(&alerts));
 
   let socket_server = SocketServer::new(
     Arc::clone(&bundles),

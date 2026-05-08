@@ -41,6 +41,7 @@ instant-acme = "0.8"
 pem = "3"
 oneiriq-surql = { version = "0.2", default-features = false, features = ["client-rustls"] }
 futures = "0.3"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "ring"] }
 
 [profile.release]
 lto = "thin"

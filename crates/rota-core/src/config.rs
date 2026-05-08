@@ -35,6 +35,12 @@ pub struct RotaConfig {
   /// cert names ACME as its CA.
   #[serde(default)]
   pub acme: Option<AcmeAccount>,
+  /// Daemon-wide alert sinks. Every event fans out to every entry,
+  /// so operators can mix (e.g.) email + webhook in one config.
+  /// Empty or omitted = silent (renewal failures still hit the audit
+  /// log).
+  #[serde(default)]
+  pub alerts: Vec<AlertSpec>,
   pub certs: Vec<CertConfig>,
 }
 
@@ -238,6 +244,55 @@ pub enum RegistrarSpec {
   Cloudflare,
 }
 
+/// Alert-backend selector. Each variant carries the sink-specific
+/// settings inline. Account-wide creds are inlined too (rather than
+/// referenced from a separate top-level block) because alert sinks
+/// are typically used at most once per deployment, so the duplication
+/// of a single SMTP host across two `email` entries is rare and not
+/// worth a dedicated `smtp:` block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AlertSpec {
+  /// SMTP email. Submission ports (587 STARTTLS, 465 SMTPS) both
+  /// supported via the `tls` field. Auth is username + password
+  /// stored in a file the daemon reads at runtime.
+  Email {
+    /// SMTP server hostname.
+    smtp_host: String,
+    /// SMTP server port. Common values: 587 (STARTTLS), 465 (SMTPS).
+    smtp_port: u16,
+    /// TLS mode for the SMTP connection.
+    #[serde(default)]
+    tls: SmtpTls,
+    /// SMTP auth username. Many providers use the full `from`
+    /// address here.
+    username: String,
+    /// File holding the SMTP auth password. Read at runtime so the
+    /// secret never sits in the parsed config tree.
+    password_file: PathBuf,
+    /// `From:` header on outbound messages. Must be an address the
+    /// SMTP relay is willing to send for.
+    from: String,
+    /// `To:` recipients. At least one is required; multiple entries
+    /// translate to a comma-separated header list.
+    to: Vec<String>,
+  },
+}
+
+/// TLS mode for SMTP submission.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpTls {
+  /// STARTTLS upgrade on a plaintext port (port 587 on most relays).
+  #[default]
+  Starttls,
+  /// Implicit TLS (port 465 on most relays).
+  Implicit,
+  /// No TLS. Only safe on a localhost relay; refuse to authenticate
+  /// over unencrypted transit.
+  None,
+}
+
 /// Install-backend selector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -312,6 +367,81 @@ certs: []
     let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
     assert!(cfg.namecheap.is_none());
     assert!(cfg.certs.is_empty());
+  }
+
+  #[test]
+  fn parses_email_alert_spec() {
+    let yaml = r#"
+alerts:
+  - kind: email
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    tls: starttls
+    username: alerts@example.com
+    password_file: /etc/rota/secrets/smtp.password
+    from: rota@example.com
+    to:
+      - oncall@example.com
+      - secondary@example.com
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(cfg.alerts.len(), 1);
+    match &cfg.alerts[0] {
+      AlertSpec::Email {
+        smtp_host,
+        smtp_port,
+        tls,
+        username,
+        password_file,
+        from,
+        to,
+      } => {
+        assert_eq!(smtp_host, "smtp.example.com");
+        assert_eq!(*smtp_port, 587);
+        assert!(matches!(tls, SmtpTls::Starttls));
+        assert_eq!(username, "alerts@example.com");
+        assert_eq!(
+          password_file,
+          &PathBuf::from("/etc/rota/secrets/smtp.password")
+        );
+        assert_eq!(from, "rota@example.com");
+        assert_eq!(
+          to,
+          &vec![
+            "oncall@example.com".to_owned(),
+            "secondary@example.com".to_owned()
+          ]
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn missing_alerts_block_defaults_to_empty() {
+    let yaml = r#"
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(cfg.alerts.is_empty());
+  }
+
+  #[test]
+  fn smtp_tls_defaults_to_starttls() {
+    let yaml = r#"
+alerts:
+  - kind: email
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    username: u
+    password_file: /tmp/pw
+    from: a@example.com
+    to: [b@example.com]
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    let AlertSpec::Email { tls, .. } = &cfg.alerts[0];
+    assert!(matches!(tls, SmtpTls::Starttls));
   }
 
   #[test]

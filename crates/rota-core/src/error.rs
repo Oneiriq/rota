@@ -27,6 +27,9 @@ pub enum Error {
   #[error("install backend error: {0}")]
   Install(String),
 
+  #[error("alert backend error: {0}")]
+  Alert(String),
+
   #[error("io error: {0}")]
   Io(#[from] std::io::Error),
 
