@@ -1,20 +1,25 @@
 //! `rota`: the command-line client.
 //!
-//! Thin client that talks to `rotad` over a UNIX socket for
-//! status/manual-renew/install operations. Designed so every action
-//! the dashboard surfaces is also reachable headlessly.
+//! Thin clap-to-socket adapter. Every action the dashboard surfaces
+//! is reachable here too; the daemon enforces the same authz
+//! (socket file mode 0o600) so headless ops are safe to script.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use rota_cli::client::send_request;
+use rota_cli::format::{render_log, render_status};
 use rota_core::config::RotaConfig;
+use rota_core::protocol::{RenewalOutcome, Request, Response};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(name = "rota", about = "rota CLI", version)]
 struct Args {
-  /// Path to rota.yaml.
+  /// Path to rota.yaml. The CLI reads it to discover the daemon's
+  /// `socket_path`; pass `--socket` to override.
   #[arg(
     short,
     long,
@@ -22,6 +27,11 @@ struct Args {
     default_value = "/etc/rota/rota.yaml"
   )]
   config: PathBuf,
+
+  /// Override the daemon socket path. Useful when running rotad in
+  /// a non-default location or in an integration test.
+  #[arg(long)]
+  socket: Option<PathBuf>,
 
   #[command(subcommand)]
   command: Command,
@@ -33,52 +43,114 @@ enum Command {
   Check,
   /// List configured certs and their last-known status.
   Status,
-  /// Force a renewal for one cert, or all certs with `--all`.
+  /// Force a renewal for one cert.
   Renew {
     /// Cert id to renew.
-    #[arg(long, conflicts_with = "all")]
-    cert: Option<String>,
-    /// Renew every configured cert.
-    #[arg(long, default_value_t = false)]
-    all: bool,
+    #[arg(long)]
+    cert: String,
+  },
+  /// Show the latest renewal log entry for one cert.
+  Log {
+    /// Cert id to inspect.
+    cert: String,
   },
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
+  match run().await {
+    Ok(code) => code,
+    Err(err) => {
+      eprintln!("rota: {err:#}");
+      ExitCode::from(1)
+    }
+  }
+}
+
+async fn run() -> Result<ExitCode> {
   tracing_subscriber::fmt()
-    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+    .with_writer(std::io::stderr)
     .init();
 
   let args = Args::parse();
-  let config = RotaConfig::load(&args.config)?;
 
-  match args.command {
-    Command::Check => {
-      println!("config ok: {} cert(s)", config.certs.len());
-      for cert in &config.certs {
-        println!("  - {} ({})", cert.id, cert.domains.join(", "));
-      }
+  // Check is the only subcommand that doesn't need the daemon.
+  if let Command::Check = &args.command {
+    let config = RotaConfig::load(&args.config)?;
+    println!("config ok: {} cert(s)", config.certs.len());
+    for cert in &config.certs {
+      println!("  - {} ({})", cert.id, cert.domains.join(", "));
     }
-    Command::Status => {
-      // v0.1: connect to rotad over UNIX socket, fetch CertStatus list.
-      println!("status command not yet implemented (v0.0.0 scaffold)");
-    }
-    Command::Renew { cert, all } => match (cert, all) {
-      (Some(id), false) => {
-        config
-          .cert(&id)
-          .ok_or_else(|| anyhow::anyhow!("no cert with id {id}"))?;
-        println!("would renew {id} (v0.0.0 scaffold)");
-      }
-      (None, true) => {
-        for cert in &config.certs {
-          println!("would renew {} (v0.0.0 scaffold)", cert.id);
-        }
-      }
-      _ => anyhow::bail!("pass either --cert <id> or --all"),
-    },
+    return Ok(ExitCode::SUCCESS);
   }
 
-  Ok(())
+  let socket = match args.socket {
+    Some(p) => p,
+    None => RotaConfig::load(&args.config)?.daemon.socket_path,
+  };
+
+  match args.command {
+    Command::Check => unreachable!(),
+    Command::Status => {
+      let resp = send_request(&socket, &Request::Status).await?;
+      match resp {
+        Response::Status { certs, .. } => {
+          print!("{}", render_status(&certs));
+          Ok(ExitCode::SUCCESS)
+        }
+        Response::Error { message, .. } => Err(anyhow!("daemon error: {message}")),
+        other => Err(anyhow!("unexpected response: {other:?}")),
+      }
+    }
+    Command::Renew { cert } => {
+      let resp = send_request(
+        &socket,
+        &Request::Renew {
+          cert_id: cert.clone(),
+        },
+      )
+      .await?;
+      match resp {
+        Response::Renew {
+          renewal_id,
+          outcome,
+          ..
+        } => match outcome {
+          RenewalOutcome::Success => {
+            println!("renewal succeeded for {cert} (renewal_id={renewal_id})");
+            Ok(ExitCode::SUCCESS)
+          }
+          RenewalOutcome::Failed => {
+            eprintln!("renewal failed for {cert} (renewal_id={renewal_id})");
+            eprintln!("(see `rota log {cert}` for the audit trail)");
+            Ok(ExitCode::from(2))
+          }
+        },
+        Response::Error { message, .. } => Err(anyhow!("daemon error: {message}")),
+        other => Err(anyhow!("unexpected response: {other:?}")),
+      }
+    }
+    Command::Log { cert } => {
+      let resp = send_request(
+        &socket,
+        &Request::Log {
+          cert_id: cert.clone(),
+          limit: None,
+        },
+      )
+      .await
+      .with_context(|| format!("fetch log for {cert}"))?;
+      match resp {
+        Response::Log {
+          cert_id, events, ..
+        } => {
+          print!("{}", render_log(&cert_id, &events));
+          Ok(ExitCode::SUCCESS)
+        }
+        Response::Error { message, .. } => Err(anyhow!("daemon error: {message}")),
+        other => Err(anyhow!("unexpected response: {other:?}")),
+      }
+    }
+  }
 }
