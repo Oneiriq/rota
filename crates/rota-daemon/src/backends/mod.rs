@@ -7,6 +7,7 @@
 //! impls the relevant trait and an arm in [`build_ca`] /
 //! [`build_registrar`] / [`build_install`].
 
+pub mod cloudflare;
 pub mod dsm;
 pub mod filesystem;
 pub mod namecheap;
@@ -15,10 +16,11 @@ use std::sync::Arc;
 
 use rota_core::backend::{CABackend, InstallBackend, RegistrarBackend};
 use rota_core::config::{
-  CaSpec, CertConfig, InstallSpec, NamecheapAccount, RegistrarSpec, RotaConfig,
+  CaSpec, CertConfig, CloudflareAccount, InstallSpec, NamecheapAccount, RegistrarSpec, RotaConfig,
 };
 use rota_core::{Error, Result};
 
+use cloudflare::{CloudflareClient, CloudflareRegistrar};
 use dsm::DsmInstall;
 use filesystem::FilesystemInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
@@ -43,11 +45,19 @@ pub fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
     Some(account) => Some(build_namecheap_client(account)?),
     None => None,
   };
+  let cloudflare_client = match &config.cloudflare {
+    Some(account) => Some(build_cloudflare_client(account)?),
+    None => None,
+  };
 
   let mut bundles = Vec::with_capacity(config.certs.len());
   for cert in &config.certs {
     let ca = build_ca(&cert.ca, namecheap_client.as_ref())?;
-    let registrar = build_registrar(&cert.registrar, namecheap_client.as_ref())?;
+    let registrar = build_registrar(
+      &cert.registrar,
+      namecheap_client.as_ref(),
+      cloudflare_client.as_ref(),
+    )?;
     let install = build_install(&cert.install, cert)?;
     bundles.push(CertBackends {
       config: cert.clone(),
@@ -81,6 +91,19 @@ fn build_namecheap_client(account: &NamecheapAccount) -> Result<Arc<NamecheapCli
   Ok(NamecheapClient::new(creds).into_arc())
 }
 
+fn build_cloudflare_client(account: &CloudflareAccount) -> Result<Arc<CloudflareClient>> {
+  let token = std::fs::read_to_string(&account.api_token_file)
+    .map_err(|e| {
+      Error::ConfigInvalid(format!(
+        "cloudflare api_token_file {}: {e}",
+        account.api_token_file.display()
+      ))
+    })?
+    .trim()
+    .to_owned();
+  Ok(CloudflareClient::new(token).into_arc())
+}
+
 fn build_ca(
   spec: &CaSpec,
   namecheap_client: Option<&Arc<NamecheapClient>>,
@@ -100,6 +123,7 @@ fn build_ca(
 fn build_registrar(
   spec: &RegistrarSpec,
   namecheap_client: Option<&Arc<NamecheapClient>>,
+  cloudflare_client: Option<&Arc<CloudflareClient>>,
 ) -> Result<Arc<dyn RegistrarBackend>> {
   match spec {
     RegistrarSpec::Namecheap => {
@@ -109,6 +133,15 @@ fn build_registrar(
         )
       })?;
       Ok(Arc::new(NamecheapRegistrar::new(Arc::clone(client))))
+    }
+    RegistrarSpec::Cloudflare => {
+      let client = cloudflare_client.ok_or_else(|| {
+        Error::ConfigInvalid(
+          "cert names cloudflare registrar but config is missing top-level `cloudflare` block"
+            .into(),
+        )
+      })?;
+      Ok(Arc::new(CloudflareRegistrar::new(Arc::clone(client))))
     }
   }
 }
