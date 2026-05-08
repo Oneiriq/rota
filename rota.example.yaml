@@ -56,3 +56,9 @@ certs:
     install:
       kind: dsm
       description: My Public Site
+      # Other install kinds:
+      #   filesystem: { directory: /etc/ssl/example }
+      #   nginx:      { directory: /etc/nginx/certs/example,
+      #                 reload_command: ["systemctl", "reload", "nginx"] }
+      # nginx defaults reload_command to ["nginx", "-s", "reload"] if
+      # the field is omitted.

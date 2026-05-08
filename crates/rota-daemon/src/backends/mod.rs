@@ -13,6 +13,7 @@ pub mod dsm;
 pub mod email;
 pub mod filesystem;
 pub mod namecheap;
+pub mod nginx;
 pub mod webhook;
 
 use std::sync::Arc;
@@ -30,6 +31,7 @@ use dsm::DsmInstall;
 use email::{EmailAlert, EmailAlertParams};
 use filesystem::FilesystemInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
+use nginx::NginxInstall;
 use webhook::{WebhookAlert, WebhookAlertParams};
 
 /// All backends bound to one `CertConfig`. Owns the lifetime of the
@@ -172,6 +174,14 @@ fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn
     InstallSpec::Filesystem { directory } => Ok(Some(Arc::new(FilesystemInstall::new(
       directory.clone(),
       cert.id.clone(),
+    )))),
+    InstallSpec::Nginx {
+      directory,
+      reload_command,
+    } => Ok(Some(Arc::new(NginxInstall::new(
+      directory.clone(),
+      cert.id.clone(),
+      reload_command.clone(),
     )))),
   }
 }

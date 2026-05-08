@@ -324,6 +324,19 @@ pub enum InstallSpec {
   /// Plain filesystem: write `<dir>/<id>.crt`, `<dir>/<id>.chain.crt`,
   /// and a copy of the private key with mode 600.
   Filesystem { directory: PathBuf },
+  /// Filesystem write + nginx reload. Files land in `<directory>`
+  /// using the same naming convention as `Filesystem`, then the
+  /// configured `reload_command` runs to make nginx pick the new
+  /// cert up. Default reload is `["nginx", "-s", "reload"]`; override
+  /// for systemd (`["systemctl", "reload", "nginx"]`) or sudo wrappers.
+  Nginx {
+    directory: PathBuf,
+    /// Override the reload invocation. Argv-style; empty list falls
+    /// back to the default. The daemon does not pass through a shell,
+    /// so quoting is unnecessary.
+    #[serde(default)]
+    reload_command: Option<Vec<String>>,
+  },
 }
 
 fn default_db_path() -> PathBuf {
@@ -540,6 +553,70 @@ certs:
         assert_eq!(directory, &PathBuf::from("/etc/ssl/example"));
       }
       _ => panic!("expected filesystem install"),
+    }
+  }
+
+  #[test]
+  fn parses_nginx_install_variant_with_reload_override() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-nginx
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    registrar: { kind: namecheap }
+    install:
+      kind: nginx
+      directory: /etc/nginx/certs/example
+      reload_command: ["systemctl", "reload", "nginx"]
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::Nginx {
+        directory,
+        reload_command,
+      } => {
+        assert_eq!(directory, &PathBuf::from("/etc/nginx/certs/example"));
+        assert_eq!(
+          reload_command.as_ref().unwrap(),
+          &vec![
+            "systemctl".to_owned(),
+            "reload".to_owned(),
+            "nginx".to_owned(),
+          ]
+        );
+      }
+      _ => panic!("expected nginx install"),
+    }
+  }
+
+  #[test]
+  fn nginx_reload_command_is_optional() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-nginx-default
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    registrar: { kind: namecheap }
+    install:
+      kind: nginx
+      directory: /etc/nginx/certs/example
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::Nginx { reload_command, .. } => {
+        assert!(reload_command.is_none());
+      }
+      _ => panic!("expected nginx install"),
     }
   }
 }
