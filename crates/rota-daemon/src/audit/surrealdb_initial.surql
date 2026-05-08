@@ -27,3 +27,13 @@ DEFINE TABLE IF NOT EXISTS cluster_lock SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS holder ON TABLE cluster_lock TYPE string;
 DEFINE FIELD IF NOT EXISTS acquired_at ON TABLE cluster_lock TYPE datetime;
 DEFINE FIELD IF NOT EXISTS expires_at ON TABLE cluster_lock TYPE datetime;
+
+-- Issued certs persisted for cluster federation. Followers poll this
+-- table and install whatever's newer than what they have locally.
+-- Cert + chain PEM only; the private key stays on each node.
+DEFINE TABLE IF NOT EXISTS issued_cert SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS cert_id ON TABLE issued_cert TYPE string;
+DEFINE FIELD IF NOT EXISTS cert_pem ON TABLE issued_cert TYPE string;
+DEFINE FIELD IF NOT EXISTS chain_pem ON TABLE issued_cert TYPE string;
+DEFINE FIELD IF NOT EXISTS issued_at ON TABLE issued_cert TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_issued_cert_cert_id ON TABLE issued_cert COLUMNS cert_id;

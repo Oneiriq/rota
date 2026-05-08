@@ -22,7 +22,9 @@ use serde_json::{json, Value};
 use surql::connection::auth::RootCredentials;
 use surql::connection::{ConnectionConfig, DatabaseClient};
 
-use super::types::{AuditStore, EventKind, RenewalId, RenewalRecord, RenewalStatus};
+use super::types::{
+  AuditStore, EventKind, IssuedCertRecord, RenewalId, RenewalRecord, RenewalStatus,
+};
 
 const SCHEMA_SURQL: &str = include_str!("surrealdb_initial.surql");
 
@@ -266,6 +268,83 @@ impl AuditStore for SurrealAuditStore {
     let ok = row.get("ok").and_then(Value::as_u64).unwrap_or(0) as usize;
     let failed = row.get("failed").and_then(Value::as_u64).unwrap_or(0) as usize;
     Ok((ok, failed))
+  }
+
+  async fn record_issued_cert(
+    &self,
+    cert_id: &str,
+    cert_pem: &str,
+    chain_pem: &str,
+    issued_at: DateTime<Utc>,
+  ) -> Result<()> {
+    let mut vars = BTreeMap::new();
+    vars.insert("cert_id".to_owned(), Value::String(cert_id.to_owned()));
+    vars.insert("cert_pem".to_owned(), Value::String(cert_pem.to_owned()));
+    vars.insert("chain_pem".to_owned(), Value::String(chain_pem.to_owned()));
+    vars.insert(
+      "issued_at".to_owned(),
+      Value::String(issued_at.to_rfc3339()),
+    );
+
+    client_query(
+      &self.client,
+      "CREATE issued_cert CONTENT {
+         cert_id: $cert_id,
+         cert_pem: $cert_pem,
+         chain_pem: $chain_pem,
+         issued_at: <datetime>$issued_at
+       };",
+      vars,
+    )
+    .await?;
+    Ok(())
+  }
+
+  async fn latest_issued_cert(&self, cert_id: &str) -> Result<Option<IssuedCertRecord>> {
+    let mut vars = BTreeMap::new();
+    vars.insert("cert_id".to_owned(), Value::String(cert_id.to_owned()));
+
+    let raw = client_query(
+      &self.client,
+      "SELECT cert_id, cert_pem, chain_pem, issued_at
+       FROM issued_cert
+       WHERE cert_id = $cert_id
+       ORDER BY issued_at DESC
+       LIMIT 1;",
+      vars,
+    )
+    .await?;
+
+    let Some(row) = first_row(&raw) else {
+      return Ok(None);
+    };
+    let cert_id = row
+      .get("cert_id")
+      .and_then(Value::as_str)
+      .ok_or_else(|| Error::Install("issued_cert row missing cert_id".into()))?
+      .to_owned();
+    let cert_pem = row
+      .get("cert_pem")
+      .and_then(Value::as_str)
+      .ok_or_else(|| Error::Install("issued_cert row missing cert_pem".into()))?
+      .to_owned();
+    let chain_pem = row
+      .get("chain_pem")
+      .and_then(Value::as_str)
+      .ok_or_else(|| Error::Install("issued_cert row missing chain_pem".into()))?
+      .to_owned();
+    let issued_at = row
+      .get("issued_at")
+      .and_then(value_as_string)
+      .as_deref()
+      .map(parse_ts)
+      .ok_or_else(|| Error::Install("issued_cert row missing issued_at".into()))?;
+    Ok(Some(IssuedCertRecord {
+      cert_id,
+      cert_pem,
+      chain_pem,
+      issued_at,
+    }))
   }
 }
 

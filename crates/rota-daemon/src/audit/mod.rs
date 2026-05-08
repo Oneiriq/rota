@@ -24,7 +24,7 @@ mod types;
 pub use sqlite::SqliteAuditStore;
 #[cfg(feature = "surrealdb")]
 pub use surrealdb::SurrealAuditStore;
-pub use types::{AuditStore, EventKind, RenewalId, RenewalRecord, RenewalStatus};
+pub use types::{AuditStore, EventKind, IssuedCertRecord, RenewalId, RenewalRecord, RenewalStatus};
 
 #[cfg(test)]
 mod tests;

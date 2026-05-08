@@ -20,6 +20,7 @@ use rota_daemon::cluster::NoOpCoordinator;
 #[cfg(feature = "surrealdb")]
 use rota_daemon::cluster::SurrealClusterCoordinator;
 use rota_daemon::dashboard::{self, DashboardState};
+use rota_daemon::install_sync::{InstallSyncConfig, InstallSyncTask};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
 use rota_daemon::socket::SocketServer;
@@ -134,7 +135,22 @@ async fn main() -> Result<()> {
     })
   };
 
-  // Any task returning is unexpected (all four should loop
+  // Install-sync task: followers poll the audit store for new
+  // issued certs and install them locally. On the leader the task
+  // self-suppresses on every sweep, so spawning unconditionally
+  // costs nothing at runtime and means a demoted-to-follower node
+  // starts catching up the moment the lock lapses.
+  let install_sync = InstallSyncTask::new(
+    Arc::clone(&bundles),
+    Arc::clone(&audit),
+    Arc::clone(&cluster),
+    InstallSyncConfig {
+      poll_interval: interval,
+    },
+  );
+  let install_sync_task = tokio::spawn(install_sync.run());
+
+  // Any task returning is unexpected (all five should loop
   // forever). When one returns, log and exit; the supervisor
   // (systemd, Container Manager) restarts the daemon.
   tokio::select! {
@@ -142,6 +158,7 @@ async fn main() -> Result<()> {
     _ = socket_task => tracing::warn!("socket task exited"),
     _ = dashboard_task => tracing::warn!("dashboard task exited"),
     _ = cluster_task => tracing::warn!("cluster coordinator task exited"),
+    _ = install_sync_task => tracing::warn!("install_sync task exited"),
   }
   Ok(())
 }

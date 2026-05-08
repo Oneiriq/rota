@@ -16,6 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use chrono::Utc;
 use rcgen::{CertificateParams, KeyPair};
 use rota_core::secrets::redact;
 use rota_core::Result;
@@ -170,6 +171,20 @@ impl CertRenewer {
     }
 
     let issued = issuance?;
+    // Persist the issued material to the audit store BEFORE the local
+    // install step. Followers in a cluster poll for new entries here
+    // and run their own install backends; if the leader's local
+    // install then fails, the cert is still distributable to peers
+    // who can serve it. Cert + chain only — never the private key.
+    self
+      .audit
+      .record_issued_cert(
+        &bundle.config.id,
+        &issued.cert_pem,
+        &issued.chain_pem,
+        Utc::now(),
+      )
+      .await?;
     self
       .audit
       .append_event(renewal_id, EventKind::CertIssued, None)
