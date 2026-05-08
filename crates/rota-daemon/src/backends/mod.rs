@@ -7,6 +7,7 @@
 //! impls the relevant trait and an arm in [`build_ca`] /
 //! [`build_registrar`] / [`build_install`].
 
+pub mod acme;
 pub mod cloudflare;
 pub mod dsm;
 pub mod filesystem;
@@ -20,6 +21,7 @@ use rota_core::config::{
 };
 use rota_core::{Error, Result};
 
+use acme::AcmeCa;
 use cloudflare::{CloudflareClient, CloudflareRegistrar};
 use dsm::DsmInstall;
 use filesystem::FilesystemInstall;
@@ -40,7 +42,7 @@ pub struct CertBackends {
 /// across every cert that names Namecheap as its CA or registrar.
 /// Matches Namecheap's rate-limit model and avoids redundant
 /// connection setup.
-pub fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
+pub async fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
   let namecheap_client = match &config.namecheap {
     Some(account) => Some(build_namecheap_client(account)?),
     None => None,
@@ -49,10 +51,14 @@ pub fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
     Some(account) => Some(build_cloudflare_client(account)?),
     None => None,
   };
+  let acme_ca = match &config.acme {
+    Some(spec) => Some(Arc::new(AcmeCa::from_spec(spec).await?)),
+    None => None,
+  };
 
   let mut bundles = Vec::with_capacity(config.certs.len());
   for cert in &config.certs {
-    let ca = build_ca(&cert.ca, namecheap_client.as_ref())?;
+    let ca = build_ca(&cert.ca, namecheap_client.as_ref(), acme_ca.as_ref())?;
     let registrar = build_registrar(
       &cert.registrar,
       namecheap_client.as_ref(),
@@ -107,6 +113,7 @@ fn build_cloudflare_client(account: &CloudflareAccount) -> Result<Arc<Cloudflare
 fn build_ca(
   spec: &CaSpec,
   namecheap_client: Option<&Arc<NamecheapClient>>,
+  acme_ca: Option<&Arc<AcmeCa>>,
 ) -> Result<Arc<dyn CABackend>> {
   match spec {
     CaSpec::Namecheap { ssl_id } => {
@@ -116,6 +123,14 @@ fn build_ca(
         )
       })?;
       Ok(Arc::new(NamecheapCa::new(Arc::clone(client), *ssl_id)))
+    }
+    CaSpec::Acme => {
+      let ca = acme_ca.ok_or_else(|| {
+        Error::ConfigInvalid(
+          "cert names acme CA but config is missing top-level `acme` block".into(),
+        )
+      })?;
+      Ok(Arc::clone(ca) as Arc<dyn CABackend>)
     }
   }
 }

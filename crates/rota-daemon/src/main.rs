@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     "rotad starting"
   );
 
-  let bundles = backends::build_from_config(&config)?;
+  let bundles = backends::build_from_config(&config).await?;
   for bundle in &bundles {
     info!(
       cert = %bundle.config.id,
