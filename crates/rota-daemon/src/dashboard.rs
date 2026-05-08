@@ -148,7 +148,7 @@ async fn summarise(state: &DashboardState, bundle: &CertBackends) -> CertSummary
     description: bundle.config.description.clone(),
     domains: bundle.config.domains.clone(),
     ca_backend: bundle.ca.name().to_owned(),
-    registrar_backend: bundle.registrar.name().to_owned(),
+    dcv_backend: bundle.dcv.name().to_owned(),
     install_backend: install_name,
     not_after,
     days_until_expiry,
@@ -222,7 +222,7 @@ fn detail_body(c: &CertSummary, log: Option<&LogEntry>) -> Markup {
     dl {
       dt { "domains" } dd { (c.domains.join(", ")) }
       dt { "ca" } dd { (c.ca_backend) }
-      dt { "registrar" } dd { (c.registrar_backend) }
+      dt { "dcv" } dd { (c.dcv_backend) }
       dt { "install" } dd { (c.install_backend.clone().unwrap_or_else(|| "(none)".into())) }
       dt { "not after" } dd {
         (c.not_after.as_ref().map(format_ts).unwrap_or_else(|| "-".into()))

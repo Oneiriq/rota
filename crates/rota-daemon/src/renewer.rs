@@ -94,41 +94,51 @@ impl CertRenewer {
       )
       .await?;
 
-    // Publish every DCV record before calling await_issuance so the
-    // CA sees them all at once when it polls. Track which ones we
+    // Fast-fail if the configured DCV backend can't satisfy what the
+    // CA returned. Better to surface the misconfiguration before we
+    // start side-effecting any registrar / webroot.
+    for challenge in &challenges {
+      if !bundle.dcv.supports(challenge) {
+        return Err(rota_core::Error::ConfigInvalid(format!(
+          "dcv backend {} does not support {} challenges (cert {})",
+          bundle.dcv.name(),
+          challenge.kind_str(),
+          bundle.config.id
+        )));
+      }
+    }
+
+    // Publish every challenge before calling await_issuance so the CA
+    // sees them all at once when it polls. Track which ones we
     // published so the unconditional cleanup loop below removes the
     // exact set we put up (and not any leftovers from a prior run
-    // that the registrar might still have).
+    // that the DCV backend might still have).
     let mut published: Vec<&rota_core::backend::DcvChallenge> =
       Vec::with_capacity(challenges.len());
     for challenge in &challenges {
-      bundle.registrar.publish_txt(challenge).await?;
+      bundle.dcv.publish(challenge).await?;
       self
         .audit
         .append_event(
           renewal_id,
           EventKind::DcvPublished,
-          Some(&challenge.record_name),
+          Some(&challenge.label()),
         )
         .await?;
       published.push(challenge);
     }
 
-    // Await issuance, then unconditionally clean up every DCV record
+    // Await issuance, then unconditionally clean up every challenge
     // we published, even if issuance failed.
     let issuance = bundle.ca.await_issuance(&bundle.config.domains).await;
 
     let mut cleanup_err: Option<rota_core::Error> = None;
     for challenge in &published {
-      match bundle.registrar.remove_txt(challenge).await {
+      match bundle.dcv.remove(challenge).await {
         Ok(()) => {
           let _ = self
             .audit
-            .append_event(
-              renewal_id,
-              EventKind::DcvRemoved,
-              Some(&challenge.record_name),
-            )
+            .append_event(renewal_id, EventKind::DcvRemoved, Some(&challenge.label()))
             .await;
         }
         Err(err) => {
@@ -137,10 +147,10 @@ impl CertRenewer {
             .append_event(
               renewal_id,
               EventKind::Error,
-              Some(&format!("dcv cleanup {}: {err}", challenge.record_name)),
+              Some(&format!("dcv cleanup {}: {err}", challenge.label())),
             )
             .await;
-          // Keep walking so every record gets a removal attempt;
+          // Keep walking so every challenge gets a removal attempt;
           // remember the first failure to surface afterwards.
           cleanup_err.get_or_insert(err);
         }
@@ -174,12 +184,12 @@ impl CertRenewer {
 
 /// One-line summary of a multi-DCV challenge set for audit logs.
 /// We avoid joining the full record-value strings since the audit
-/// detail field is short; the per-record events carry the names.
+/// detail field is short; the per-challenge events carry the labels.
 fn format_challenge_summary(challenges: &[rota_core::backend::DcvChallenge]) -> String {
   match challenges.len() {
     0 => "(no challenges)".to_owned(),
-    1 => challenges[0].record_name.clone(),
-    n => format!("{n} dcv records (first: {})", challenges[0].record_name),
+    1 => challenges[0].label(),
+    n => format!("{n} dcv challenges (first: {})", challenges[0].label()),
   }
 }
 

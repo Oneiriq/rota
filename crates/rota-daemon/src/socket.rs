@@ -163,7 +163,7 @@ impl SocketServer {
       description: bundle.config.description.clone(),
       domains: bundle.config.domains.clone(),
       ca_backend: bundle.ca.name().to_owned(),
-      registrar_backend: bundle.registrar.name().to_owned(),
+      dcv_backend: bundle.dcv.name().to_owned(),
       install_backend: install_name,
       not_after,
       days_until_expiry,

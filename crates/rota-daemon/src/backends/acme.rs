@@ -209,7 +209,7 @@ impl CABackend for AcmeCa {
         .challenge(ChallengeType::Dns01)
         .ok_or_else(|| Error::Ca(format!("no dns-01 challenge for {domain}")))?;
       let dns_value = challenge.key_authorization().dns_value();
-      challenges.push(DcvChallenge {
+      challenges.push(DcvChallenge::Dns01 {
         record_name: format!("_acme-challenge.{domain}"),
         record_value: dns_value,
         ttl: DCV_TTL_SECONDS,

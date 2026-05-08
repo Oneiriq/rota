@@ -4,8 +4,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
-use rota_core::backend::{CABackend, DcvChallenge, InstallBackend, IssuedCert, RegistrarBackend};
-use rota_core::config::{CaSpec, CertConfig, InstallSpec, RegistrarSpec};
+use rota_core::backend::{CABackend, DcvBackend, DcvChallenge, InstallBackend, IssuedCert};
+use rota_core::config::{CaSpec, CertConfig, DcvSpec, InstallSpec};
 use rota_core::Result;
 use tower::ServiceExt;
 
@@ -29,16 +29,19 @@ impl CABackend for StubCa {
 }
 
 #[derive(Default)]
-struct StubRegistrar;
+struct StubDcv;
 #[async_trait]
-impl RegistrarBackend for StubRegistrar {
+impl DcvBackend for StubDcv {
   fn name(&self) -> &str {
-    "reg"
+    "dcv"
   }
-  async fn publish_txt(&self, _: &DcvChallenge) -> Result<()> {
+  fn supports(&self, _: &DcvChallenge) -> bool {
+    true
+  }
+  async fn publish(&self, _: &DcvChallenge) -> Result<()> {
     unreachable!()
   }
-  async fn remove_txt(&self, _: &DcvChallenge) -> Result<()> {
+  async fn remove(&self, _: &DcvChallenge) -> Result<()> {
     unreachable!()
   }
 }
@@ -65,7 +68,7 @@ fn cert_config(id: &str) -> CertConfig {
     domains: vec!["example.com".to_owned()],
     key_path: PathBuf::from("/tmp/unused"),
     ca: CaSpec::Namecheap { ssl_id: 1 },
-    registrar: RegistrarSpec::Namecheap,
+    dcv: DcvSpec::Namecheap,
     install: InstallSpec::Filesystem {
       directory: PathBuf::from("/tmp/unused"),
     },
@@ -78,7 +81,7 @@ async fn build_router_state() -> DashboardState {
   let bundles = Arc::new(vec![CertBackends {
     config: cert_config("alpha"),
     ca: Arc::new(StubCa) as Arc<dyn CABackend>,
-    registrar: Arc::new(StubRegistrar) as Arc<dyn RegistrarBackend>,
+    dcv: Arc::new(StubDcv) as Arc<dyn DcvBackend>,
     install: Some(Arc::new(StubInstall) as Arc<dyn InstallBackend>),
   }]);
   DashboardState {

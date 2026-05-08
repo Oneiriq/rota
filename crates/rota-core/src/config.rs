@@ -112,8 +112,10 @@ pub struct CertConfig {
   pub key_path: PathBuf,
   /// CA that issues this cert.
   pub ca: CaSpec,
-  /// Registrar that hosts DNS for DCV.
-  pub registrar: RegistrarSpec,
+  /// DCV strategy that satisfies the CA's challenge. Renamed from
+  /// `registrar` in v0.6 because HTTP-01 solvers (webroot, internal
+  /// listener) do not involve a registrar.
+  pub dcv: DcvSpec,
   /// Where the issued cert + chain land.
   pub install: InstallSpec,
 }
@@ -232,14 +234,16 @@ pub enum CaSpec {
   Acme,
 }
 
-/// Registrar-backend selector.
+/// DCV-backend selector. Each variant carries the strategy-specific
+/// settings inline. Today's variants are all DNS-01 (Namecheap,
+/// Cloudflare); HTTP-01 solvers layer on as additional variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RegistrarSpec {
-  /// Namecheap-managed DNS. Account creds come from the top-level
-  /// `namecheap` block.
+pub enum DcvSpec {
+  /// DNS-01 via Namecheap-managed DNS. Account creds come from the
+  /// top-level `namecheap` block.
   Namecheap,
-  /// Cloudflare DNS via the v4 API. Account creds come from the
+  /// DNS-01 via Cloudflare's v4 API. Account creds come from the
   /// top-level `cloudflare` block.
   Cloudflare,
 }
@@ -426,7 +430,7 @@ mod tests {
       CaSpec::Namecheap { ssl_id } => assert_eq!(ssl_id, 12345678),
       _ => panic!("expected namecheap ca"),
     }
-    assert!(matches!(cert.registrar, RegistrarSpec::Namecheap));
+    assert!(matches!(cert.dcv, DcvSpec::Namecheap));
     match &cert.install {
       InstallSpec::Dsm { description } => assert_eq!(description, "My Public Site"),
       _ => panic!("expected dsm install"),
@@ -584,7 +588,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: filesystem
       directory: /etc/ssl/example
@@ -611,7 +615,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: nginx
       directory: /etc/nginx/certs/example
@@ -649,7 +653,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: haproxy
       directory: /etc/haproxy/certs
@@ -683,7 +687,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: k8s_secret
       namespace: ingress-nginx
@@ -720,7 +724,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: k8s_secret
       namespace: default
@@ -752,7 +756,7 @@ certs:
     domains: [example.org]
     key_path: /tmp/example.key
     ca: { kind: namecheap, ssl_id: 1 }
-    registrar: { kind: namecheap }
+    dcv: { kind: namecheap }
     install:
       kind: nginx
       directory: /etc/nginx/certs/example

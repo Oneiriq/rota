@@ -51,7 +51,7 @@ certs:
     ca:
       kind: namecheap
       ssl_id: 12345678
-    registrar:
+    dcv:
       kind: namecheap
     install:
       kind: dsm

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rota_core::backend::{CABackend, DcvChallenge, InstallBackend, IssuedCert, RegistrarBackend};
-use rota_core::config::{CaSpec, CertConfig, InstallSpec, RegistrarSpec};
+use rota_core::backend::{CABackend, DcvBackend, DcvChallenge, InstallBackend, IssuedCert};
+use rota_core::config::{CaSpec, CertConfig, DcvSpec, InstallSpec};
 use rota_core::protocol::{Request, Response};
 use rota_core::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -29,17 +29,20 @@ impl CABackend for StubCa {
 }
 
 #[derive(Default)]
-struct StubRegistrar;
+struct StubDcv;
 #[async_trait]
-impl RegistrarBackend for StubRegistrar {
+impl DcvBackend for StubDcv {
   fn name(&self) -> &str {
-    "stub-reg"
+    "stub-dcv"
   }
-  async fn publish_txt(&self, _: &DcvChallenge) -> Result<()> {
-    unreachable!("status path does not call registrar")
+  fn supports(&self, _: &DcvChallenge) -> bool {
+    true
   }
-  async fn remove_txt(&self, _: &DcvChallenge) -> Result<()> {
-    unreachable!("status path does not call registrar")
+  async fn publish(&self, _: &DcvChallenge) -> Result<()> {
+    unreachable!("status path does not call dcv")
+  }
+  async fn remove(&self, _: &DcvChallenge) -> Result<()> {
+    unreachable!("status path does not call dcv")
   }
 }
 
@@ -65,7 +68,7 @@ fn cert_config(id: &str) -> CertConfig {
     domains: vec!["example.com".to_owned()],
     key_path: PathBuf::from("/tmp/unused"),
     ca: CaSpec::Namecheap { ssl_id: 1 },
-    registrar: RegistrarSpec::Namecheap,
+    dcv: DcvSpec::Namecheap,
     install: InstallSpec::Filesystem {
       directory: PathBuf::from("/tmp/unused"),
     },
@@ -114,13 +117,13 @@ async fn status_returns_summary_for_each_configured_cert() {
     CertBackends {
       config: cert_config("alpha"),
       ca: Arc::new(StubCa) as Arc<dyn CABackend>,
-      registrar: Arc::new(StubRegistrar) as Arc<dyn RegistrarBackend>,
+      dcv: Arc::new(StubDcv) as Arc<dyn DcvBackend>,
       install: Some(Arc::new(StubInstall) as Arc<dyn InstallBackend>),
     },
     CertBackends {
       config: cert_config("beta"),
       ca: Arc::new(StubCa) as Arc<dyn CABackend>,
-      registrar: Arc::new(StubRegistrar) as Arc<dyn RegistrarBackend>,
+      dcv: Arc::new(StubDcv) as Arc<dyn DcvBackend>,
       install: None,
     },
   ]);

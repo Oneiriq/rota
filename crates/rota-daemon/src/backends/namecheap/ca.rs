@@ -71,8 +71,8 @@ impl CABackend for NamecheapCa {
     // Namecheap's reissue command: submit the CSR + DNS-DCV election.
     // The response carries either an `<HostName>`/`<Target>` pair (CNAME
     // validation) or a `<TxtName>`/`<TxtValue>` pair depending on the
-    // CA tier. We surface whichever shape we get back as a TXT-style
-    // challenge; the caller's RegistrarBackend handles the publish.
+    // CA tier. We surface whichever shape we get back as a Dns01
+    // challenge; the caller's DcvBackend handles the publish.
     let resp = self
       .client
       .call(
@@ -108,7 +108,7 @@ impl CABackend for NamecheapCa {
     info!(record = %record_name, "namecheap reissue accepted, dcv pending");
     // Namecheap reissue folds every SAN under one DCV record, so
     // the trait's Vec always has exactly one element here.
-    Ok(vec![DcvChallenge {
+    Ok(vec![DcvChallenge::Dns01 {
       record_name,
       record_value,
       ttl: DCV_TTL_SECONDS,

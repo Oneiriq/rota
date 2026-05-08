@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
     info!(
       cert = %bundle.config.id,
       ca = %bundle.ca.name(),
-      registrar = %bundle.registrar.name(),
+      dcv = %bundle.dcv.name(),
       install = bundle.install.as_ref().map(|i| i.name()).unwrap_or("(stub)"),
       "cert backends bound"
     );
