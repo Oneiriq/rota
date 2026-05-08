@@ -6,7 +6,7 @@ Multiple `rotad` instances pointing at the same SurrealDB elect a single leader 
 
 Two operator-side use cases:
 
-1. **High-availability renewer.** A single `rotad` is a single point of failure: if its host goes down within `renew_threshold_days` of a cert's `notAfter`, the cert lapses. A two-node cluster with leader election keeps renewal pulled forward through host failures.
+1. **High-availability renewer.** A single `rotad` is a single point of failure. If its host goes down within `renew_threshold_days` of a cert's `notAfter`, the cert lapses. A two-node cluster with leader election keeps renewal pulled forward through host failures.
 2. **Multi-host install.** A cert that fronts multiple machines (load balancers, service mesh ingress, redundant API servers) needs to land on each host. With federation, one node renews and every node installs locally.
 
 ## Architecture
@@ -35,16 +35,15 @@ Two operator-side use cases:
         ↓ install (local)
 ```
 
-- All nodes share one SurrealDB (or a SurrealDB cluster — rota doesn't care which).
-- One node holds the lock at `cluster_lock:singleton` and runs the renewal scheduler. Others have their schedulers gated on `is_leader()` and skip silently.
-- The leader's renewer pipeline persists every successful issuance to the `issued_cert` table.
-- Every node (including the leader, but the leader's `install_sync` self-suppresses) runs an `InstallSyncTask` that polls `issued_cert` and runs the local `InstallBackend` when the audit cert is fresher than what's installed locally.
+All nodes share one SurrealDB. (rota doesn't care whether that's a single instance or a SurrealDB cluster.) One node holds the lock at `cluster_lock:singleton` and runs the renewal scheduler; the others have their schedulers gated on `is_leader()` and skip silently.
+
+The leader's renewer pipeline persists every successful issuance to the `issued_cert` table. Every node (including the leader, but the leader's `install_sync` self-suppresses) runs an `InstallSyncTask` that polls `issued_cert` and runs the local `InstallBackend` when the audit cert is fresher than what's installed locally.
 
 ## Trust model
 
-- The audit store carries cert PEM + chain PEM. **Private keys are never written to the audit store.**
-- Each cluster member's `key_path` private key is provisioned out-of-band — config-management, secrets manager, manual scp, whatever the operator already uses for sensitive material.
-- The shared SurrealDB is in the trust boundary for cert metadata + renewal history but not for key material. If the database is compromised, an attacker can read which certs exist and when they were renewed; they cannot forge requests against the CA or impersonate any host.
+The audit store carries cert PEM and chain PEM. Private keys are never written to the audit store.
+
+Each cluster member's `key_path` private key is provisioned out-of-band: config-management, secrets manager, manual scp, whatever the operator already uses for sensitive material. The shared SurrealDB is in the trust boundary for cert metadata and renewal history but not for key material. If the database is compromised, an attacker can read which certs exist and when they were renewed; they cannot forge requests against the CA or impersonate any host.
 
 ## Setup
 
@@ -56,7 +55,7 @@ Operators who already run SurrealDB skip ahead. Otherwise the simplest is one `s
 surreal start --user root --pass <root-password> file:///var/lib/surrealdb
 ```
 
-Then create the namespace + database for rota:
+Then create the namespace and database for rota:
 
 ```bash
 surreal sql --user root --pass <root-password> --ns rota --db prod
@@ -74,11 +73,11 @@ install -d -m 0700 /var/lib/rota/keys
 install -m 0600 example.com.key /var/lib/rota/keys/example.com.key
 ```
 
-The keys must be byte-identical across nodes; rota uses one key per cert (no per-node keys) so the cert validates against any node's TLS handshake.
+The keys must be byte-identical across nodes. rota uses one key per cert (no per-node keys) so the cert validates against any node's TLS handshake.
 
 ### 3. Configure each node
 
-Each `rota.yaml` is the same except for the `cluster.node_id`:
+Each `rota.yaml` is the same except for `cluster.node_id`:
 
 ```yaml
 daemon:
@@ -131,8 +130,8 @@ rota status
 Each node shows the same cert table (it's pulled from the shared audit). `rotad`'s logs differentiate:
 
 ```text
-INFO cluster: acquired leader lock     ← leader
-INFO cluster: still follower           ← followers
+INFO cluster: acquired leader lock     # leader
+INFO cluster: still follower           # followers
 ```
 
 A direct query against SurrealDB:
@@ -157,14 +156,16 @@ shows the fresh cert blob. Each follower's `install_sync` task picks it up on it
 
 When the leader dies (host crash, kernel oom, network partition), its lease lapses after `lease_seconds` (default 60s). The next polling follower acquires the lock and becomes the new leader; renewals pick back up automatically. No operator intervention needed.
 
-If a leader recovers from a transient failure and re-acquires the lock, no harm: the `record_issued_cert` writes are append-only, and `latest_issued_cert` is monotonic by `issued_at`.
+If a leader recovers from a transient failure and re-acquires the lock, no harm done: the `record_issued_cert` writes are append-only, and `latest_issued_cert` is monotonic by `issued_at`.
 
 ## Failure modes worth knowing
 
-- **SurrealDB unreachable from the leader.** The lease loop logs lock-check failures and demotes defensively. Followers see no leader; on their next sweep one of them tries to acquire and may succeed (if their network sees SurrealDB) or also fail. Renewals pause until SurrealDB is reachable from at least one node.
-- **Private key drift across nodes.** If the per-node `key_path` differs, follower installs will succeed locally but the served cert won't match any other node's chain. Audit this with a cross-node `openssl x509 -in` + `openssl rsa -in` modulus comparison.
-- **Cert distribution lag.** Followers poll on `check_interval_seconds`. With the default 1h, a follower can be up to 1h behind the leader's renewal. Tune the interval down if you need tighter sync (the cost is more SurrealDB traffic, but it's a single SELECT per cert per tick).
+**SurrealDB unreachable from the leader.** The lease loop logs lock-check failures and demotes defensively. Followers see no leader; on their next sweep one of them tries to acquire and may succeed (if their network sees SurrealDB) or also fail. Renewals pause until SurrealDB is reachable from at least one node.
+
+**Private key drift across nodes.** If the per-node `key_path` differs, follower installs will succeed locally but the served cert won't match any other node's chain. Audit this with a cross-node `openssl x509 -in` and `openssl rsa -in` modulus comparison.
+
+**Cert distribution lag.** Followers poll on `check_interval_seconds`. With the default 1h, a follower can be up to 1h behind the leader's renewal. Tune the interval down if you need tighter sync (the cost is more SurrealDB traffic, but it's a single SELECT per cert per tick).
 
 ## Rolling back to single-node
 
-Set `cluster.enabled: false` (or remove the block entirely) on the surviving node and restart it. The leader lock will lapse; no other node tries to acquire. The audit store retains its history; just point the surviving node at SQLite instead of SurrealDB if you want to fully decouple.
+Set `cluster.enabled: false` (or remove the block entirely) on the surviving node and restart it. The leader lock will lapse; no other node tries to acquire. The audit store retains its history. Point the surviving node at SQLite instead of SurrealDB if you want to fully decouple.
