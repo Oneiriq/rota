@@ -68,11 +68,10 @@ Each entry in `rota.yaml` picks one of each, so a mixed fleet runs through the s
 
 ## Status
 
-v0.1.0. The daemon is end-to-end: trait surface, config schema, Namecheap CA + registrar, DSM + filesystem install, SQLite/SurrealDB audit log, renewer pipeline, and the scheduler loop that ticks on `check_interval_seconds` and triggers renewals when a cert is within `renew_threshold_days` of expiry. The `rota` CLI socket and the dashboard land in v0.2.
+v0.2.0. Three control surfaces wired against the same state. The scheduler from v0.1.0 ticks renewals on `check_interval_seconds`. A `rota` CLI talks to `rotad` over a UNIX socket for `status`, `renew --cert <id>`, and `log <cert>`. A maud + htmx dashboard at `daemon.listen_addr` shows the cert table, per-cert detail, and a manual "renew now" button. ACME, alerts, and more install targets are next.
 
 ## Roadmap
 
-- v0.2: `rota` CLI (`status`, `renew --cert <id>`, `log <id>`) over a UNIX socket; dashboard cert table + per-cert detail + audit timeline.
 - v0.3: ACME backend (Let's Encrypt, ZeroSSL). Cloudflare registrar backend.
 - v0.4: Email + webhook alerts. Prometheus `/metrics` endpoint.
 - v0.5: Kubernetes Secret + nginx reload + HAProxy install backends.
