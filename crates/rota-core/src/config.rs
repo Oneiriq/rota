@@ -359,6 +359,27 @@ pub enum InstallSpec {
     /// (or under `crt-list`).
     cert_storage_name: String,
   },
+  /// Kubernetes `kubernetes.io/tls` Secret. Server-side applies a
+  /// Secret named `secret_name` in `namespace` with `tls.crt`
+  /// (cert + chain bundle) and `tls.key` data fields, suitable for
+  /// Ingress, Gateway, and any controller that consumes the
+  /// standard TLS Secret shape. Auth is in-cluster service account
+  /// when `kubeconfig_path` is omitted (the daemon reads
+  /// `/var/run/secrets/kubernetes.io/serviceaccount/`), otherwise
+  /// it loads the named kubeconfig file. The service account
+  /// (or kubeconfig user) needs `get`, `create`, and `patch` on
+  /// `secrets` in the target namespace.
+  K8sSecret {
+    /// Namespace the Secret lives in.
+    namespace: String,
+    /// Name of the Secret resource. Matches the `secretName` field
+    /// on Ingress / Gateway TLS configurations.
+    secret_name: String,
+    /// Optional kubeconfig file. Omit when running inside a pod
+    /// to use the mounted service account credentials.
+    #[serde(default)]
+    kubeconfig_path: Option<PathBuf>,
+  },
 }
 
 fn default_db_path() -> PathBuf {
@@ -647,6 +668,75 @@ certs:
         assert_eq!(cert_storage_name, "/etc/haproxy/certs/example.pem");
       }
       _ => panic!("expected haproxy install"),
+    }
+  }
+
+  #[test]
+  fn parses_k8s_secret_install_variant_with_kubeconfig() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-k8s
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    registrar: { kind: namecheap }
+    install:
+      kind: k8s_secret
+      namespace: ingress-nginx
+      secret_name: example-tls
+      kubeconfig_path: /etc/rota/kubeconfig
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::K8sSecret {
+        namespace,
+        secret_name,
+        kubeconfig_path,
+      } => {
+        assert_eq!(namespace, "ingress-nginx");
+        assert_eq!(secret_name, "example-tls");
+        assert_eq!(
+          kubeconfig_path.as_ref().unwrap(),
+          &PathBuf::from("/etc/rota/kubeconfig")
+        );
+      }
+      _ => panic!("expected k8s_secret install"),
+    }
+  }
+
+  #[test]
+  fn k8s_secret_kubeconfig_path_is_optional() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-k8s-incluster
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    registrar: { kind: namecheap }
+    install:
+      kind: k8s_secret
+      namespace: default
+      secret_name: example-tls
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::K8sSecret {
+        kubeconfig_path, ..
+      } => {
+        assert!(
+          kubeconfig_path.is_none(),
+          "in-cluster mode = kubeconfig_path: None"
+        );
+      }
+      _ => panic!("expected k8s_secret install"),
     }
   }
 

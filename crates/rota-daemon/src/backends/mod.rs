@@ -13,6 +13,7 @@ pub mod dsm;
 pub mod email;
 pub mod filesystem;
 pub mod haproxy;
+pub mod k8s;
 pub mod namecheap;
 pub mod nginx;
 pub mod webhook;
@@ -32,6 +33,7 @@ use dsm::DsmInstall;
 use email::{EmailAlert, EmailAlertParams};
 use filesystem::FilesystemInstall;
 use haproxy::HaproxyInstall;
+use k8s::K8sSecretInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
 use nginx::NginxInstall;
 use webhook::{WebhookAlert, WebhookAlertParams};
@@ -73,7 +75,7 @@ pub async fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>>
       namecheap_client.as_ref(),
       cloudflare_client.as_ref(),
     )?;
-    let install = build_install(&cert.install, cert)?;
+    let install = build_install(&cert.install, cert).await?;
     bundles.push(CertBackends {
       config: cert.clone(),
       ca,
@@ -170,7 +172,10 @@ fn build_registrar(
   }
 }
 
-fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn InstallBackend>>> {
+async fn build_install(
+  spec: &InstallSpec,
+  cert: &CertConfig,
+) -> Result<Option<Arc<dyn InstallBackend>>> {
   match spec {
     InstallSpec::Dsm { description } => Ok(Some(Arc::new(DsmInstall::new(description.clone())))),
     InstallSpec::Filesystem { directory } => Ok(Some(Arc::new(FilesystemInstall::new(
@@ -195,6 +200,19 @@ fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn
       socket_path.clone(),
       cert_storage_name.clone(),
     )))),
+    InstallSpec::K8sSecret {
+      namespace,
+      secret_name,
+      kubeconfig_path,
+    } => {
+      let install = K8sSecretInstall::new(
+        namespace.clone(),
+        secret_name.clone(),
+        kubeconfig_path.clone(),
+      )
+      .await?;
+      Ok(Some(Arc::new(install)))
+    }
   }
 }
 
