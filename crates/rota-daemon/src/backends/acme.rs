@@ -30,7 +30,7 @@ use instant_acme::{
   Account, AccountCredentials, ChallengeType, ExternalAccountKey, Identifier, NewAccount, NewOrder,
   Order, OrderStatus, RetryPolicy,
 };
-use rota_core::backend::{CABackend, DcvChallenge, IssuedCert};
+use rota_core::backend::{CABackend, ChallengeKind, DcvChallenge, IssuedCert};
 use rota_core::config::{AcmeAccount, EabConfig};
 use rota_core::secrets::redact;
 use rota_core::{Error, Result};
@@ -183,7 +183,12 @@ impl CABackend for AcmeCa {
     "acme"
   }
 
-  async fn submit(&self, domains: &[String], csr_pem: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    domains: &[String],
+    csr_pem: &str,
+    preferred_kinds: &[ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     let identifiers: Vec<Identifier> = domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
 
     let mut order = self
@@ -191,6 +196,16 @@ impl CABackend for AcmeCa {
       .new_order(&NewOrder::new(&identifiers))
       .await
       .map_err(|e| Error::Ca(format!("acme new_order: {}", redact(&e.to_string()))))?;
+
+    // Default to DNS-01 if the renewer didn't pass a preference.
+    // ACME orders typically offer both DNS-01 and HTTP-01; without
+    // a hint, DNS-01 matches rota's default DcvBackend lineup
+    // (Namecheap, Cloudflare).
+    let preference: Vec<ChallengeKind> = if preferred_kinds.is_empty() {
+      vec![ChallengeKind::Dns01]
+    } else {
+      preferred_kinds.to_vec()
+    };
 
     let mut challenges = Vec::with_capacity(domains.len());
     let mut authorizations = order.authorizations();
@@ -205,15 +220,44 @@ impl CABackend for AcmeCa {
           )));
         }
       };
-      let challenge = authz
-        .challenge(ChallengeType::Dns01)
-        .ok_or_else(|| Error::Ca(format!("no dns-01 challenge for {domain}")))?;
-      let dns_value = challenge.key_authorization().dns_value();
-      challenges.push(DcvChallenge {
-        record_name: format!("_acme-challenge.{domain}"),
-        record_value: dns_value,
-        ttl: DCV_TTL_SECONDS,
+
+      // instant-acme's `authz.challenge(kind)` returns a borrow that
+      // lasts for the AuthorizationHandle's full lifetime, so calling
+      // it twice in a row to test multiple kinds is a borrow-checker
+      // error. Inspect the (publicly Deref-exposed) challenge list
+      // immutably first to pick the kind, then make exactly one
+      // mutable `challenge()` call.
+      let chosen_kind = preference.iter().copied().find(|k| {
+        let acme_kind = match k {
+          ChallengeKind::Dns01 => ChallengeType::Dns01,
+          ChallengeKind::Http01 => ChallengeType::Http01,
+        };
+        authz.challenges.iter().any(|c| c.r#type == acme_kind)
       });
+      let kind = chosen_kind.ok_or_else(|| {
+        Error::Ca(format!(
+          "acme: no challenge offered for {domain} matches dcv preference {:?}",
+          preference.iter().map(|k| k.as_str()).collect::<Vec<_>>()
+        ))
+      })?;
+      let acme_kind = match kind {
+        ChallengeKind::Dns01 => ChallengeType::Dns01,
+        ChallengeKind::Http01 => ChallengeType::Http01,
+      };
+      let c = authz.challenge(acme_kind).expect("kind verified above");
+      let challenge = match kind {
+        ChallengeKind::Dns01 => DcvChallenge::Dns01 {
+          record_name: format!("_acme-challenge.{domain}"),
+          record_value: c.key_authorization().dns_value(),
+          ttl: DCV_TTL_SECONDS,
+        },
+        ChallengeKind::Http01 => DcvChallenge::Http01 {
+          domain: domain.clone(),
+          token: c.token.clone(),
+          key_authorization: c.key_authorization().as_str().to_owned(),
+        },
+      };
+      challenges.push(challenge);
     }
     let _ = authorizations;
 

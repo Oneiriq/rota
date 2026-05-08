@@ -90,6 +90,20 @@ pub struct RenewalRecord {
   pub error: Option<String>,
 }
 
+/// One issuance, persisted for cluster cert distribution. The audit
+/// store keeps the latest cert PEM + chain PEM keyed by cert id;
+/// followers poll for new entries and run their local install
+/// backend with their own pre-provisioned private key (rota does
+/// NOT distribute private key material through the audit store —
+/// operators handle key distribution out-of-band).
+#[derive(Debug, Clone)]
+pub struct IssuedCertRecord {
+  pub cert_id: String,
+  pub cert_pem: String,
+  pub chain_pem: String,
+  pub issued_at: DateTime<Utc>,
+}
+
 /// Backend-independent audit log. The trait is dyn-safe so callers
 /// hold `Arc<dyn AuditStore>` without caring which backend was wired.
 #[async_trait]
@@ -123,4 +137,22 @@ pub trait AuditStore: Send + Sync {
 
   /// `(success, failed)` count for a cert id.
   async fn count_by_status(&self, cert_id: &str) -> Result<(usize, usize)>;
+
+  /// Persist a successfully issued cert + chain so cluster followers
+  /// can pick it up. Called by the renewer after every successful
+  /// `await_issuance`. Stores cert PEM + chain PEM only; private key
+  /// material stays on each node and is never written here.
+  async fn record_issued_cert(
+    &self,
+    cert_id: &str,
+    cert_pem: &str,
+    chain_pem: &str,
+    issued_at: DateTime<Utc>,
+  ) -> Result<()>;
+
+  /// Latest issued cert for a cert id, or `None` if none has been
+  /// recorded. Followers poll this, compare against what they have
+  /// installed locally, and install fresh whenever the audit cert
+  /// is newer.
+  async fn latest_issued_cert(&self, cert_id: &str) -> Result<Option<IssuedCertRecord>>;
 }

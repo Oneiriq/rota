@@ -12,10 +12,15 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use rota_core::cluster::ClusterCoordinator;
 use rota_core::config::{AuditSpec, RotaConfig};
 use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
+use rota_daemon::cluster::NoOpCoordinator;
+#[cfg(feature = "surrealdb")]
+use rota_daemon::cluster::SurrealClusterCoordinator;
 use rota_daemon::dashboard::{self, DashboardState};
+use rota_daemon::install_sync::{InstallSyncConfig, InstallSyncTask};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
 use rota_daemon::socket::SocketServer;
@@ -54,7 +59,7 @@ async fn main() -> Result<()> {
     info!(
       cert = %bundle.config.id,
       ca = %bundle.ca.name(),
-      registrar = %bundle.registrar.name(),
+      dcv = %bundle.dcv.name(),
       install = bundle.install.as_ref().map(|i| i.name()).unwrap_or("(stub)"),
       "cert backends bound"
     );
@@ -68,6 +73,13 @@ async fn main() -> Result<()> {
 
   let audit = build_audit(&config).await?;
   info!(backend = %audit.name(), "audit store ready");
+
+  let cluster = build_cluster(&config).await?;
+  info!(
+    coordinator = %cluster.name(),
+    node = %cluster.node_id(),
+    "cluster coordinator bound"
+  );
 
   let renewer = Arc::new(CertRenewer::new(Arc::clone(&audit)));
   let bundles = Arc::new(bundles);
@@ -86,7 +98,8 @@ async fn main() -> Result<()> {
       failure_cooldown: interval,
     },
   )
-  .with_alerts(Arc::clone(&alerts));
+  .with_alerts(Arc::clone(&alerts))
+  .with_cluster(Arc::clone(&cluster));
 
   let socket_server = SocketServer::new(
     Arc::clone(&bundles),
@@ -113,16 +126,88 @@ async fn main() -> Result<()> {
       tracing::error!(error = %err, "dashboard failed");
     }
   });
+  let cluster_task = {
+    let cluster = Arc::clone(&cluster);
+    tokio::spawn(async move {
+      if let Err(err) = cluster.run().await {
+        tracing::error!(error = %err, "cluster coordinator failed");
+      }
+    })
+  };
 
-  // Any task returning is unexpected (all three should loop
+  // Install-sync task: followers poll the audit store for new
+  // issued certs and install them locally. On the leader the task
+  // self-suppresses on every sweep, so spawning unconditionally
+  // costs nothing at runtime and means a demoted-to-follower node
+  // starts catching up the moment the lock lapses.
+  let install_sync = InstallSyncTask::new(
+    Arc::clone(&bundles),
+    Arc::clone(&audit),
+    Arc::clone(&cluster),
+    InstallSyncConfig {
+      poll_interval: interval,
+    },
+  );
+  let install_sync_task = tokio::spawn(install_sync.run());
+
+  // Any task returning is unexpected (all five should loop
   // forever). When one returns, log and exit; the supervisor
   // (systemd, Container Manager) restarts the daemon.
   tokio::select! {
     _ = scheduler_task => tracing::warn!("scheduler task exited"),
     _ = socket_task => tracing::warn!("socket task exited"),
     _ = dashboard_task => tracing::warn!("dashboard task exited"),
+    _ = cluster_task => tracing::warn!("cluster coordinator task exited"),
+    _ = install_sync_task => tracing::warn!("install_sync task exited"),
   }
   Ok(())
+}
+
+/// Construct the cluster coordinator from config. Single-node
+/// deployments (no `cluster:` block, or `enabled: false`) get the
+/// NoOp coordinator that always reports leadership. Clustered
+/// deployments (`enabled: true`) require a SurrealDB audit backend
+/// because the lock state lives in the same database; we error out
+/// loudly otherwise rather than silently degrading.
+async fn build_cluster(config: &RotaConfig) -> Result<Arc<dyn ClusterCoordinator>> {
+  match &config.cluster {
+    None => Ok(Arc::new(NoOpCoordinator::new("local".to_owned()))),
+    Some(spec) if !spec.enabled => Ok(Arc::new(NoOpCoordinator::new(spec.node_id.clone()))),
+    Some(spec) => build_surreal_cluster(config, spec).await,
+  }
+}
+
+#[cfg(feature = "surrealdb")]
+async fn build_surreal_cluster(
+  config: &RotaConfig,
+  spec: &rota_core::config::ClusterSpec,
+) -> Result<Arc<dyn ClusterCoordinator>> {
+  let audit_spec = match &config.audit {
+    Some(s @ AuditSpec::Surrealdb { .. }) => s,
+    _ => {
+      return Err(anyhow::anyhow!(
+        "cluster.enabled = true requires a surrealdb audit backend (the lock lives in the same database)",
+      ));
+    }
+  };
+  let coordinator = SurrealClusterCoordinator::from_audit_spec(
+    audit_spec,
+    spec.node_id.clone(),
+    Duration::from_secs(spec.lease_seconds),
+  )
+  .await?;
+  Ok(Arc::new(coordinator))
+}
+
+#[cfg(not(feature = "surrealdb"))]
+async fn build_surreal_cluster(
+  _config: &RotaConfig,
+  spec: &rota_core::config::ClusterSpec,
+) -> Result<Arc<dyn ClusterCoordinator>> {
+  Err(anyhow::anyhow!(
+    "cluster.enabled = true (node_id = {}) requires the `surrealdb` feature, which this build was compiled without",
+    spec.node_id,
+  ))
 }
 
 async fn build_audit(config: &RotaConfig) -> Result<Arc<dyn AuditStore>> {

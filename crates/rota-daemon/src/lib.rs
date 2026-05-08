@@ -17,7 +17,10 @@
 
 pub mod audit;
 pub mod backends;
+pub mod cluster;
 pub mod dashboard;
+pub mod install_sync;
+pub mod metrics;
 pub mod renewer;
 pub mod scheduler;
 pub mod socket;

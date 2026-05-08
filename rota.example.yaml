@@ -20,6 +20,18 @@ namecheap:
   username: your-namecheap-username
   client_ip: 192.0.2.1
 
+# Cluster federation. Multiple rotad instances pointing at the same
+# SurrealDB audit store elect a single leader to run the renewal
+# scheduler; followers stand by for failover. Omit (or set
+# enabled: false) for the single-node default. Cert distribution to
+# followers lands in a follow-up release; today's build accepts the
+# config but errors on enabled: true until the SurrealDB-backed
+# coordinator ships.
+# cluster:
+#   enabled: true
+#   node_id: host-a       # unique per node
+#   lease_seconds: 60     # refresh cadence is lease/3 (~20s here)
+
 # Daemon-wide alert sinks. Every event fans out to every entry, so
 # you can mix (e.g.) email + webhook in one config. Omit this block
 # entirely for silent operation; renewal failures still hit the audit
@@ -34,6 +46,14 @@ alerts:
     from: rota@example.com
     to:
       - oncall@example.com
+  # Generic JSON envelope: {cert_id, kind, message, timestamp}.
+  # For Slack-incoming or Discord webhook formats, point a small
+  # relay (n8n, Pipedream, your own service) at this URL and
+  # translate; rota stays vendor-neutral on the wire.
+  - kind: webhook
+    url: https://hooks.example.com/incoming/abc
+    bearer_token_file: /etc/rota/secrets/webhook.token  # optional
+    timeout_seconds: 10                                  # optional, default 10
 
 certs:
   - id: example-public
@@ -43,8 +63,31 @@ certs:
     ca:
       kind: namecheap
       ssl_id: 12345678
-    registrar:
+    dcv:
       kind: namecheap
+      # Other dcv kinds:
+      #   cloudflare: { kind: cloudflare }                          # DNS-01 via Cloudflare token
+      #   webroot:    { kind: webroot, directory: /var/www/example } # HTTP-01 via existing webserver
+      # Webroot drops the challenge token at <directory>/.well-known/
+      # acme-challenge/<token>; your webserver must serve the
+      # `<directory>` over plain HTTP on port 80 so the CA's challenge
+      # fetch resolves. Used for HTTP-01 with the ACME CA backend.
     install:
       kind: dsm
       description: My Public Site
+      # Other install kinds:
+      #   filesystem:  { directory: /etc/ssl/example }
+      #   nginx:       { directory: /etc/nginx/certs/example,
+      #                  reload_command: ["systemctl", "reload", "nginx"] }
+      #   haproxy:     { directory: /etc/haproxy/certs,
+      #                  socket_path: /run/haproxy/admin.sock,
+      #                  cert_storage_name: /etc/haproxy/certs/example.pem }
+      #   k8s_secret:  { namespace: ingress-nginx,
+      #                  secret_name: example-tls,
+      #                  kubeconfig_path: /etc/rota/kubeconfig }  # omit for in-cluster SA
+      # nginx defaults reload_command to ["nginx", "-s", "reload"]
+      # if the field is omitted. haproxy uses the runtime API for
+      # zero-downtime hot-swap; expose admin socket in haproxy.cfg
+      # via `stats socket /run/haproxy/admin.sock mode 660 level admin`.
+      # k8s_secret applies a kubernetes.io/tls Secret; service account
+      # needs get/create/patch on secrets in the target namespace.

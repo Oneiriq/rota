@@ -5,44 +5,54 @@
 //! Each submodule implements one or more of the traits in
 //! `rota_core::backend`. Adding a new vendor is a sibling module that
 //! impls the relevant trait and an arm in [`build_ca`] /
-//! [`build_registrar`] / [`build_install`].
+//! [`build_dcv`] / [`build_install`].
 
 pub mod acme;
 pub mod cloudflare;
 pub mod dsm;
 pub mod email;
 pub mod filesystem;
+pub mod haproxy;
+pub mod k8s;
 pub mod namecheap;
+pub mod nginx;
+pub mod webhook;
+pub mod webroot;
 
 use std::sync::Arc;
 
-use rota_core::backend::{AlertBackend, CABackend, InstallBackend, RegistrarBackend};
+use rota_core::backend::{AlertBackend, CABackend, DcvBackend, InstallBackend};
 use rota_core::config::{
-  AlertSpec, CaSpec, CertConfig, CloudflareAccount, InstallSpec, NamecheapAccount, RegistrarSpec,
+  AlertSpec, CaSpec, CertConfig, CloudflareAccount, DcvSpec, InstallSpec, NamecheapAccount,
   RotaConfig,
 };
 use rota_core::{Error, Result};
 
 use acme::AcmeCa;
-use cloudflare::{CloudflareClient, CloudflareRegistrar};
+use cloudflare::{CloudflareClient, CloudflareDcv};
 use dsm::DsmInstall;
 use email::{EmailAlert, EmailAlertParams};
 use filesystem::FilesystemInstall;
-use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
+use haproxy::HaproxyInstall;
+use k8s::K8sSecretInstall;
+use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapDcv};
+use nginx::NginxInstall;
+use webhook::{WebhookAlert, WebhookAlertParams};
+use webroot::WebrootDcv;
 
 /// All backends bound to one `CertConfig`. Owns the lifetime of the
 /// trait objects so the scheduler can hand them around freely.
 pub struct CertBackends {
   pub config: CertConfig,
   pub ca: Arc<dyn CABackend>,
-  pub registrar: Arc<dyn RegistrarBackend>,
+  pub dcv: Arc<dyn DcvBackend>,
   pub install: Option<Arc<dyn InstallBackend>>,
 }
 
 /// Build the full backend set from a parsed config.
 ///
 /// The Namecheap HTTP client is constructed once per call and shared
-/// across every cert that names Namecheap as its CA or registrar.
+/// across every cert that names Namecheap as its CA or DCV solver.
 /// Matches Namecheap's rate-limit model and avoids redundant
 /// connection setup.
 pub async fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>> {
@@ -62,16 +72,16 @@ pub async fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>>
   let mut bundles = Vec::with_capacity(config.certs.len());
   for cert in &config.certs {
     let ca = build_ca(&cert.ca, namecheap_client.as_ref(), acme_ca.as_ref())?;
-    let registrar = build_registrar(
-      &cert.registrar,
+    let dcv = build_dcv(
+      &cert.dcv,
       namecheap_client.as_ref(),
       cloudflare_client.as_ref(),
     )?;
-    let install = build_install(&cert.install, cert)?;
+    let install = build_install(&cert.install, cert).await?;
     bundles.push(CertBackends {
       config: cert.clone(),
       ca,
-      registrar,
+      dcv,
       install,
     });
   }
@@ -138,39 +148,73 @@ fn build_ca(
   }
 }
 
-fn build_registrar(
-  spec: &RegistrarSpec,
+fn build_dcv(
+  spec: &DcvSpec,
   namecheap_client: Option<&Arc<NamecheapClient>>,
   cloudflare_client: Option<&Arc<CloudflareClient>>,
-) -> Result<Arc<dyn RegistrarBackend>> {
+) -> Result<Arc<dyn DcvBackend>> {
   match spec {
-    RegistrarSpec::Namecheap => {
+    DcvSpec::Namecheap => {
       let client = namecheap_client.ok_or_else(|| {
         Error::ConfigInvalid(
-          "cert names namecheap registrar but config is missing top-level `namecheap` block".into(),
+          "cert names namecheap dcv but config is missing top-level `namecheap` block".into(),
         )
       })?;
-      Ok(Arc::new(NamecheapRegistrar::new(Arc::clone(client))))
+      Ok(Arc::new(NamecheapDcv::new(Arc::clone(client))))
     }
-    RegistrarSpec::Cloudflare => {
+    DcvSpec::Cloudflare => {
       let client = cloudflare_client.ok_or_else(|| {
         Error::ConfigInvalid(
-          "cert names cloudflare registrar but config is missing top-level `cloudflare` block"
-            .into(),
+          "cert names cloudflare dcv but config is missing top-level `cloudflare` block".into(),
         )
       })?;
-      Ok(Arc::new(CloudflareRegistrar::new(Arc::clone(client))))
+      Ok(Arc::new(CloudflareDcv::new(Arc::clone(client))))
     }
+    DcvSpec::Webroot { directory } => Ok(Arc::new(WebrootDcv::new(directory.clone()))),
   }
 }
 
-fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn InstallBackend>>> {
+async fn build_install(
+  spec: &InstallSpec,
+  cert: &CertConfig,
+) -> Result<Option<Arc<dyn InstallBackend>>> {
   match spec {
     InstallSpec::Dsm { description } => Ok(Some(Arc::new(DsmInstall::new(description.clone())))),
     InstallSpec::Filesystem { directory } => Ok(Some(Arc::new(FilesystemInstall::new(
       directory.clone(),
       cert.id.clone(),
     )))),
+    InstallSpec::Nginx {
+      directory,
+      reload_command,
+    } => Ok(Some(Arc::new(NginxInstall::new(
+      directory.clone(),
+      cert.id.clone(),
+      reload_command.clone(),
+    )))),
+    InstallSpec::Haproxy {
+      directory,
+      socket_path,
+      cert_storage_name,
+    } => Ok(Some(Arc::new(HaproxyInstall::new(
+      directory.clone(),
+      cert.id.clone(),
+      socket_path.clone(),
+      cert_storage_name.clone(),
+    )))),
+    InstallSpec::K8sSecret {
+      namespace,
+      secret_name,
+      kubeconfig_path,
+    } => {
+      let install = K8sSecretInstall::new(
+        namespace.clone(),
+        secret_name.clone(),
+        kubeconfig_path.clone(),
+      )
+      .await?;
+      Ok(Some(Arc::new(install)))
+    }
   }
 }
 
@@ -212,6 +256,34 @@ fn build_alert(spec: &AlertSpec) -> Result<Arc<dyn AlertBackend>> {
         password: &password,
         from: from.as_str(),
         to,
+      })?;
+      Ok(Arc::new(alert))
+    }
+    AlertSpec::Webhook {
+      url,
+      bearer_token_file,
+      timeout_seconds,
+    } => {
+      let bearer_token = match bearer_token_file {
+        None => None,
+        Some(path) => {
+          let token = std::fs::read_to_string(path)
+            .map_err(|e| {
+              Error::ConfigInvalid(format!(
+                "webhook alert bearer_token_file {}: {e}",
+                path.display()
+              ))
+            })?
+            .trim()
+            .to_owned();
+          Some(token)
+        }
+      };
+      let timeout = timeout_seconds.map(std::time::Duration::from_secs);
+      let alert = WebhookAlert::new(WebhookAlertParams {
+        url: url.as_str(),
+        bearer_token: bearer_token.as_deref(),
+        timeout,
       })?;
       Ok(Arc::new(alert))
     }

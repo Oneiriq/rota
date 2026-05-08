@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rota_core::backend::{CABackend, DcvChallenge, IssuedCert};
+use rota_core::backend::{CABackend, ChallengeKind, DcvChallenge, IssuedCert};
 use rota_core::secrets::redact;
 use rota_core::{Error, Result};
 use tracing::{info, warn};
@@ -67,12 +67,22 @@ impl CABackend for NamecheapCa {
     "namecheap"
   }
 
-  async fn submit(&self, _domains: &[String], csr_pem: &str) -> Result<Vec<DcvChallenge>> {
+  async fn submit(
+    &self,
+    _domains: &[String],
+    csr_pem: &str,
+    _preferred_kinds: &[ChallengeKind],
+  ) -> Result<Vec<DcvChallenge>> {
     // Namecheap's reissue command: submit the CSR + DNS-DCV election.
     // The response carries either an `<HostName>`/`<Target>` pair (CNAME
     // validation) or a `<TxtName>`/`<TxtValue>` pair depending on the
-    // CA tier. We surface whichever shape we get back as a TXT-style
-    // challenge; the caller's RegistrarBackend handles the publish.
+    // CA tier. We surface whichever shape we get back as a Dns01
+    // challenge; the caller's DcvBackend handles the publish.
+    //
+    // `preferred_kinds` is ignored: Namecheap reissue only supports
+    // DNS-01 over their API. If the operator pairs a Namecheap CA
+    // with a webroot DCV solver, the renewer's supports() preflight
+    // catches the mismatch and reports it cleanly.
     let resp = self
       .client
       .call(
@@ -108,7 +118,7 @@ impl CABackend for NamecheapCa {
     info!(record = %record_name, "namecheap reissue accepted, dcv pending");
     // Namecheap reissue folds every SAN under one DCV record, so
     // the trait's Vec always has exactly one element here.
-    Ok(vec![DcvChallenge {
+    Ok(vec![DcvChallenge::Dns01 {
       record_name,
       record_value,
       ttl: DCV_TTL_SECONDS,

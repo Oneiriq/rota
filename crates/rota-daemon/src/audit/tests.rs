@@ -72,6 +72,37 @@ async fn run_contract(store: &dyn AuditStore) {
   let latest = store.latest_renewal("rolling").await.unwrap().unwrap();
   assert_eq!(latest.id, second);
   assert_eq!(latest.status, RenewalStatus::Failed);
+
+  // issued cert blob: empty initially, latest wins on subsequent writes.
+  assert!(store
+    .latest_issued_cert("blob-cert")
+    .await
+    .unwrap()
+    .is_none());
+  let earlier = chrono::Utc::now() - chrono::Duration::seconds(120);
+  let later = chrono::Utc::now();
+  store
+    .record_issued_cert("blob-cert", "OLD-CERT-PEM", "OLD-CHAIN-PEM", earlier)
+    .await
+    .unwrap();
+  store
+    .record_issued_cert("blob-cert", "NEW-CERT-PEM", "NEW-CHAIN-PEM", later)
+    .await
+    .unwrap();
+  let latest_cert = store
+    .latest_issued_cert("blob-cert")
+    .await
+    .unwrap()
+    .expect("blob present after two writes");
+  assert_eq!(latest_cert.cert_id, "blob-cert");
+  assert_eq!(latest_cert.cert_pem, "NEW-CERT-PEM");
+  assert_eq!(latest_cert.chain_pem, "NEW-CHAIN-PEM");
+  // Other cert ids still see no blob.
+  assert!(store
+    .latest_issued_cert("never-issued")
+    .await
+    .unwrap()
+    .is_none());
 }
 
 #[tokio::test]

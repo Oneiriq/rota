@@ -114,7 +114,7 @@ mod tests {
       description: String::new(),
       domains: vec!["example.com".to_owned(), "www.example.com".to_owned()],
       ca_backend: "namecheap".to_owned(),
-      registrar_backend: "namecheap".to_owned(),
+      dcv_backend: "namecheap".to_owned(),
       install_backend: Some("filesystem".to_owned()),
       not_after: None,
       days_until_expiry: days,

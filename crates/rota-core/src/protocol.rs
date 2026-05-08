@@ -14,7 +14,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v1: initial.
+/// v2: `CertSummary.registrar_backend` renamed to
+///     `CertSummary.dcv_backend` to track the underlying trait
+///     refactor for HTTP-01 support.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -73,7 +78,7 @@ pub struct CertSummary {
   pub description: String,
   pub domains: Vec<String>,
   pub ca_backend: String,
-  pub registrar_backend: String,
+  pub dcv_backend: String,
   pub install_backend: Option<String>,
   pub not_after: Option<DateTime<Utc>>,
   pub days_until_expiry: Option<i64>,
@@ -159,7 +164,7 @@ mod tests {
       description: "y".into(),
       domains: vec!["example.com".into()],
       ca_backend: "namecheap".into(),
-      registrar_backend: "namecheap".into(),
+      dcv_backend: "namecheap".into(),
       install_backend: Some("filesystem".into()),
       not_after: None,
       days_until_expiry: None,

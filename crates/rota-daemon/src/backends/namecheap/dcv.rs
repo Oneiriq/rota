@@ -12,18 +12,18 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use rota_core::backend::{DcvChallenge, RegistrarBackend};
+use rota_core::backend::{ChallengeKind, DcvBackend, DcvChallenge};
 use rota_core::{Error, Result};
 use tracing::{debug, info};
 
 use super::client::NamecheapClient;
 
 #[derive(Debug, Clone)]
-pub struct NamecheapRegistrar {
+pub struct NamecheapDcv {
   client: Arc<NamecheapClient>,
 }
 
-impl NamecheapRegistrar {
+impl NamecheapDcv {
   pub fn new(client: Arc<NamecheapClient>) -> Self {
     Self { client }
   }
@@ -62,47 +62,75 @@ impl NamecheapRegistrar {
   }
 }
 
+const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01];
+
 #[async_trait]
-impl RegistrarBackend for NamecheapRegistrar {
+impl DcvBackend for NamecheapDcv {
   fn name(&self) -> &str {
     "namecheap"
   }
 
-  async fn publish_txt(&self, challenge: &DcvChallenge) -> Result<()> {
-    let split = split_record_name(&challenge.record_name)?;
+  fn supported_kinds(&self) -> &[ChallengeKind] {
+    SUPPORTED
+  }
+
+  async fn publish(&self, challenge: &DcvChallenge) -> Result<()> {
+    let DcvChallenge::Dns01 {
+      record_name,
+      record_value,
+      ttl,
+    } = challenge
+    else {
+      return Err(Error::Registrar(format!(
+        "namecheap dcv only supports dns-01, got {}",
+        challenge.kind_str()
+      )));
+    };
+    let split = split_record_name(record_name)?;
     let mut hosts = self.get_hosts(&split.sld, &split.tld).await?;
 
     // Idempotent: if the exact (host, value) already exists, no-op.
     if hosts
       .iter()
-      .any(|h| h.is_txt() && h.name == split.subdomain && h.address == challenge.record_value)
+      .any(|h| h.is_txt() && h.name == split.subdomain && h.address == *record_value)
     {
-      debug!(record = %challenge.record_name, "namecheap txt already present");
+      debug!(record = %record_name, "namecheap txt already present");
       return Ok(());
     }
 
     hosts.push(HostRecord {
       name: split.subdomain,
       record_type: "TXT".to_owned(),
-      address: challenge.record_value.clone(),
+      address: record_value.clone(),
       mx_pref: "10".to_owned(),
-      ttl: challenge.ttl.max(60),
+      ttl: (*ttl).max(60),
     });
 
-    info!(record = %challenge.record_name, "namecheap publishing dcv txt");
+    info!(record = %record_name, "namecheap publishing dcv txt");
     self.set_hosts(&split.sld, &split.tld, &hosts).await
   }
 
-  async fn remove_txt(&self, challenge: &DcvChallenge) -> Result<()> {
-    let split = split_record_name(&challenge.record_name)?;
+  async fn remove(&self, challenge: &DcvChallenge) -> Result<()> {
+    let DcvChallenge::Dns01 {
+      record_name,
+      record_value,
+      ..
+    } = challenge
+    else {
+      return Err(Error::Registrar(format!(
+        "namecheap dcv only supports dns-01, got {}",
+        challenge.kind_str()
+      )));
+    };
+    let split = split_record_name(record_name)?;
     let hosts = self.get_hosts(&split.sld, &split.tld).await?;
 
     let filtered: Vec<HostRecord> = hosts
       .into_iter()
-      .filter(|h| !(h.is_txt() && h.name == split.subdomain && h.address == challenge.record_value))
+      .filter(|h| !(h.is_txt() && h.name == split.subdomain && h.address == *record_value))
       .collect();
 
-    info!(record = %challenge.record_name, "namecheap removing dcv txt");
+    info!(record = %record_name, "namecheap removing dcv txt");
     self.set_hosts(&split.sld, &split.tld, &filtered).await
   }
 }

@@ -36,9 +36,12 @@ axum = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 instant-acme = { workspace = true }
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
 lettre = { workspace = true }
 maud = { workspace = true }
 pem = { workspace = true }
+prometheus = { workspace = true }
 quick-xml = { workspace = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true }
