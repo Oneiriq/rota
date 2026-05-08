@@ -36,6 +36,7 @@ tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 x509-parser = "0.16"
+time = "0.3"
 oneiriq-surql = { version = "0.2", default-features = false, features = ["client-rustls"] }
 futures = "0.3"
 

@@ -20,4 +20,4 @@ x509-parser = { workspace = true }
 
 [dev-dependencies]
 rcgen = { workspace = true }
-time = "0.3"
+time = { workspace = true }
