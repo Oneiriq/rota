@@ -2,6 +2,8 @@
 
 Cert renewal for self-hosters. One Rust binary, CLI plus dashboard, pluggable CAs, registrars, and install targets.
 
+**Docs:** <https://oneiriq.github.io/rota/>
+
 ## Why I'm building this
 
 Public TLS certificate lifetimes are getting shorter on a fixed schedule. CA/Browser Forum [Ballot SC-081][sc-081], adopted in April 2025, drops the maximum validity of publicly trusted certs from 397 days down to 47 days over four years:

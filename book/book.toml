@@ -1,0 +1,19 @@
+[book]
+title = "rota"
+authors = ["Shon Thomas"]
+description = "Cert renewal for self-hosters. One Rust binary, CLI plus dashboard, pluggable CAs, registrars, and install targets."
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/Oneiriq/rota"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/Oneiriq/rota/edit/main/book/{path}"
+site-url = "/rota/"
+
+[output.html.fold]
+enable = true
+level = 1
