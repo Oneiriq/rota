@@ -43,10 +43,17 @@ pub trait CABackend: Send + Sync {
   /// Stable identifier for this backend (for logs + audit).
   fn name(&self) -> &str;
 
-  /// Submit a CSR for a new issuance. Returns the DCV challenge the
-  /// caller needs to satisfy via the registrar backend before the CA
-  /// will sign.
-  async fn submit(&self, domains: &[String], csr_pem: &str) -> Result<DcvChallenge>;
+  /// Submit a CSR for a new issuance. Returns one or more DCV
+  /// challenges the caller must satisfy via the registrar backend
+  /// before the CA will sign.
+  ///
+  /// Single-challenge CAs (Namecheap reissue, anything that folds
+  /// SAN authorizations into one record) return a single-element
+  /// vec. ACME and friends return one challenge per authorization
+  /// (typically one per SAN domain). The caller publishes every
+  /// element via `RegistrarBackend::publish_txt` before calling
+  /// `await_issuance`, and removes every element afterwards.
+  async fn submit(&self, domains: &[String], csr_pem: &str) -> Result<Vec<DcvChallenge>>;
 
   /// Poll the CA until the cert is signed or a timeout/error occurs.
   /// Called after the registrar has published the DCV TXT.

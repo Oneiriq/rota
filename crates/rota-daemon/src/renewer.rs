@@ -84,53 +84,71 @@ impl CertRenewer {
       .append_event(renewal_id, EventKind::CsrGenerated, None)
       .await?;
 
-    let challenge = bundle.ca.submit(&bundle.config.domains, &csr_pem).await?;
+    let challenges = bundle.ca.submit(&bundle.config.domains, &csr_pem).await?;
     self
       .audit
       .append_event(
         renewal_id,
         EventKind::CaSubmitted,
-        Some(&challenge.record_name),
+        Some(&format_challenge_summary(&challenges)),
       )
       .await?;
 
-    bundle.registrar.publish_txt(&challenge).await?;
-    self
-      .audit
-      .append_event(
-        renewal_id,
-        EventKind::DcvPublished,
-        Some(&challenge.record_name),
-      )
-      .await?;
+    // Publish every DCV record before calling await_issuance so the
+    // CA sees them all at once when it polls. Track which ones we
+    // published so the unconditional cleanup loop below removes the
+    // exact set we put up (and not any leftovers from a prior run
+    // that the registrar might still have).
+    let mut published: Vec<&rota_core::backend::DcvChallenge> =
+      Vec::with_capacity(challenges.len());
+    for challenge in &challenges {
+      bundle.registrar.publish_txt(challenge).await?;
+      self
+        .audit
+        .append_event(
+          renewal_id,
+          EventKind::DcvPublished,
+          Some(&challenge.record_name),
+        )
+        .await?;
+      published.push(challenge);
+    }
 
-    // Await issuance, then unconditionally clean up the DCV record.
-    // Done as separate let bindings so the cleanup runs whether the
-    // CA succeeded or failed.
+    // Await issuance, then unconditionally clean up every DCV record
+    // we published, even if issuance failed.
     let issuance = bundle.ca.await_issuance(&bundle.config.domains).await;
 
-    match bundle.registrar.remove_txt(&challenge).await {
-      Ok(()) => {
-        let _ = self
-          .audit
-          .append_event(renewal_id, EventKind::DcvRemoved, None)
-          .await;
-      }
-      Err(cleanup_err) => {
-        // Cleanup failure is recorded but does not override an
-        // earlier failure. If issuance succeeded we still surface
-        // the cleanup error so the operator notices the stray TXT.
-        let _ = self
-          .audit
-          .append_event(
-            renewal_id,
-            EventKind::Error,
-            Some(&format!("dcv cleanup: {cleanup_err}")),
-          )
-          .await;
-        if issuance.is_ok() {
-          return Err(cleanup_err);
+    let mut cleanup_err: Option<rota_core::Error> = None;
+    for challenge in &published {
+      match bundle.registrar.remove_txt(challenge).await {
+        Ok(()) => {
+          let _ = self
+            .audit
+            .append_event(
+              renewal_id,
+              EventKind::DcvRemoved,
+              Some(&challenge.record_name),
+            )
+            .await;
         }
+        Err(err) => {
+          let _ = self
+            .audit
+            .append_event(
+              renewal_id,
+              EventKind::Error,
+              Some(&format!("dcv cleanup {}: {err}", challenge.record_name)),
+            )
+            .await;
+          // Keep walking so every record gets a removal attempt;
+          // remember the first failure to surface afterwards.
+          cleanup_err.get_or_insert(err);
+        }
+      }
+    }
+    if issuance.is_ok() {
+      if let Some(err) = cleanup_err {
+        return Err(err);
       }
     }
 
@@ -151,6 +169,17 @@ impl CertRenewer {
     }
 
     Ok(())
+  }
+}
+
+/// One-line summary of a multi-DCV challenge set for audit logs.
+/// We avoid joining the full record-value strings since the audit
+/// detail field is short; the per-record events carry the names.
+fn format_challenge_summary(challenges: &[rota_core::backend::DcvChallenge]) -> String {
+  match challenges.len() {
+    0 => "(no challenges)".to_owned(),
+    1 => challenges[0].record_name.clone(),
+    n => format!("{n} dcv records (first: {})", challenges[0].record_name),
   }
 }
 

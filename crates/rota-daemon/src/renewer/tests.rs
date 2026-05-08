@@ -27,13 +27,13 @@ impl CABackend for MockCa {
   fn name(&self) -> &str {
     "mock-ca"
   }
-  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<DcvChallenge> {
+  async fn submit(&self, _domains: &[String], _csr_pem: &str) -> Result<Vec<DcvChallenge>> {
     self.submit_calls.fetch_add(1, Ordering::SeqCst);
-    Ok(DcvChallenge {
+    Ok(vec![DcvChallenge {
       record_name: "_acme-challenge.example.com".to_owned(),
       record_value: "deadbeef".to_owned(),
       ttl: 60,
-    })
+    }])
   }
   async fn await_issuance(&self, _domains: &[String]) -> Result<IssuedCert> {
     self.await_calls.fetch_add(1, Ordering::SeqCst);

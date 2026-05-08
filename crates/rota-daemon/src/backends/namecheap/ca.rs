@@ -67,7 +67,7 @@ impl CABackend for NamecheapCa {
     "namecheap"
   }
 
-  async fn submit(&self, _domains: &[String], csr_pem: &str) -> Result<DcvChallenge> {
+  async fn submit(&self, _domains: &[String], csr_pem: &str) -> Result<Vec<DcvChallenge>> {
     // Namecheap's reissue command: submit the CSR + DNS-DCV election.
     // The response carries either an `<HostName>`/`<Target>` pair (CNAME
     // validation) or a `<TxtName>`/`<TxtValue>` pair depending on the
@@ -106,11 +106,13 @@ impl CABackend for NamecheapCa {
     };
 
     info!(record = %record_name, "namecheap reissue accepted, dcv pending");
-    Ok(DcvChallenge {
+    // Namecheap reissue folds every SAN under one DCV record, so
+    // the trait's Vec always has exactly one element here.
+    Ok(vec![DcvChallenge {
       record_name,
       record_value,
       ttl: DCV_TTL_SECONDS,
-    })
+    }])
   }
 
   async fn await_issuance(&self, _domains: &[String]) -> Result<IssuedCert> {
