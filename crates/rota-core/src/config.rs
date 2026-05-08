@@ -27,6 +27,10 @@ pub struct RotaConfig {
   /// CA or registrar.
   #[serde(default)]
   pub namecheap: Option<NamecheapAccount>,
+  /// Account-wide Cloudflare credentials. Required if any cert names
+  /// Cloudflare as its registrar.
+  #[serde(default)]
+  pub cloudflare: Option<CloudflareAccount>,
   pub certs: Vec<CertConfig>,
 }
 
@@ -123,6 +127,17 @@ pub struct NamecheapAccount {
   pub client_ip: String,
 }
 
+/// Account-wide Cloudflare credentials. The API token must have the
+/// `Zone.DNS:Edit` scope on the zones rota will publish DCV records
+/// in. Tokens are preferred over the legacy Global API Key; rota
+/// only supports tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudflareAccount {
+  /// Path to a file containing the API token. Read at runtime so
+  /// the secret never sits in the parsed config tree.
+  pub api_token_file: PathBuf,
+}
+
 /// Audit log backend selector. SQLite is the default if the
 /// top-level `audit:` block is omitted; rota's own daemon owns the
 /// SQLite file with no external service to provision. SurrealDB is
@@ -173,6 +188,9 @@ pub enum RegistrarSpec {
   /// Namecheap-managed DNS. Account creds come from the top-level
   /// `namecheap` block.
   Namecheap,
+  /// Cloudflare DNS via the v4 API. Account creds come from the
+  /// top-level `cloudflare` block.
+  Cloudflare,
 }
 
 /// Install-backend selector.
