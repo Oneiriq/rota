@@ -13,6 +13,7 @@ pub mod dsm;
 pub mod email;
 pub mod filesystem;
 pub mod namecheap;
+pub mod webhook;
 
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use dsm::DsmInstall;
 use email::{EmailAlert, EmailAlertParams};
 use filesystem::FilesystemInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
+use webhook::{WebhookAlert, WebhookAlertParams};
 
 /// All backends bound to one `CertConfig`. Owns the lifetime of the
 /// trait objects so the scheduler can hand them around freely.
@@ -212,6 +214,34 @@ fn build_alert(spec: &AlertSpec) -> Result<Arc<dyn AlertBackend>> {
         password: &password,
         from: from.as_str(),
         to,
+      })?;
+      Ok(Arc::new(alert))
+    }
+    AlertSpec::Webhook {
+      url,
+      bearer_token_file,
+      timeout_seconds,
+    } => {
+      let bearer_token = match bearer_token_file {
+        None => None,
+        Some(path) => {
+          let token = std::fs::read_to_string(path)
+            .map_err(|e| {
+              Error::ConfigInvalid(format!(
+                "webhook alert bearer_token_file {}: {e}",
+                path.display()
+              ))
+            })?
+            .trim()
+            .to_owned();
+          Some(token)
+        }
+      };
+      let timeout = timeout_seconds.map(std::time::Duration::from_secs);
+      let alert = WebhookAlert::new(WebhookAlertParams {
+        url: url.as_str(),
+        bearer_token: bearer_token.as_deref(),
+        timeout,
       })?;
       Ok(Arc::new(alert))
     }

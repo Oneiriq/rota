@@ -277,6 +277,24 @@ pub enum AlertSpec {
     /// translate to a comma-separated header list.
     to: Vec<String>,
   },
+  /// HTTPS webhook. POSTs a generic JSON envelope
+  /// (`{cert_id, kind, message, timestamp}`) to the configured URL.
+  /// For Slack-incoming or Discord webhook formats, run the events
+  /// through a small relay (n8n, Pipedream, your own service); rota
+  /// stays vendor-neutral on the wire.
+  Webhook {
+    /// Full URL to POST to (must include scheme).
+    url: String,
+    /// Optional file containing a Bearer token. When set, the daemon
+    /// adds `Authorization: Bearer <token>` to the request.
+    #[serde(default)]
+    bearer_token_file: Option<PathBuf>,
+    /// Per-request timeout in seconds. Defaults to 10 if omitted; the
+    /// scheduler waits synchronously, so a runaway sink would stall
+    /// other alerts in the same fan-out.
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+  },
 }
 
 /// TLS mode for SMTP submission.
@@ -405,6 +423,58 @@ certs: []
         assert_eq!(from, "rota@example.com");
         assert_eq!(to, &vec!["oncall@example.com".to_owned(), "secondary@example.com".to_owned()]);
       }
+      _ => panic!("expected email alert"),
+    }
+  }
+
+  #[test]
+  fn parses_webhook_alert_spec() {
+    let yaml = r#"
+alerts:
+  - kind: webhook
+    url: https://hooks.example.com/incoming/abc
+    bearer_token_file: /etc/rota/secrets/webhook.token
+    timeout_seconds: 5
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(cfg.alerts.len(), 1);
+    match &cfg.alerts[0] {
+      AlertSpec::Webhook {
+        url,
+        bearer_token_file,
+        timeout_seconds,
+      } => {
+        assert_eq!(url, "https://hooks.example.com/incoming/abc");
+        assert_eq!(
+          bearer_token_file.as_ref().unwrap(),
+          &PathBuf::from("/etc/rota/secrets/webhook.token")
+        );
+        assert_eq!(*timeout_seconds, Some(5));
+      }
+      _ => panic!("expected webhook alert"),
+    }
+  }
+
+  #[test]
+  fn webhook_optional_fields_default() {
+    let yaml = r#"
+alerts:
+  - kind: webhook
+    url: https://hooks.example.com/incoming/abc
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.alerts[0] {
+      AlertSpec::Webhook {
+        bearer_token_file,
+        timeout_seconds,
+        ..
+      } => {
+        assert!(bearer_token_file.is_none());
+        assert!(timeout_seconds.is_none());
+      }
+      _ => panic!("expected webhook alert"),
     }
   }
 
@@ -431,7 +501,9 @@ alerts:
 certs: []
 "#;
     let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
-    let AlertSpec::Email { tls, .. } = &cfg.alerts[0];
+    let AlertSpec::Email { tls, .. } = &cfg.alerts[0] else {
+      panic!("expected email alert");
+    };
     assert!(matches!(tls, SmtpTls::Starttls));
   }
 

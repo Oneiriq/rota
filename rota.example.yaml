@@ -34,6 +34,14 @@ alerts:
     from: rota@example.com
     to:
       - oncall@example.com
+  # Generic JSON envelope: {cert_id, kind, message, timestamp}.
+  # For Slack-incoming or Discord webhook formats, point a small
+  # relay (n8n, Pipedream, your own service) at this URL and
+  # translate; rota stays vendor-neutral on the wire.
+  - kind: webhook
+    url: https://hooks.example.com/incoming/abc
+    bearer_token_file: /etc/rota/secrets/webhook.token  # optional
+    timeout_seconds: 10                                  # optional, default 10
 
 certs:
   - id: example-public
