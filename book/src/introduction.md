@@ -27,24 +27,15 @@ I run my own stuff and I'd like to keep doing that. So I'm writing the tool I'd 
 
 ## What it does
 
-- Watches your CA-issued certs and knows when they're close to expiry.
-- Generates fresh CSRs against persistent private keys you control.
-- Submits reissue or renewal requests to the CA over that CA's API.
-- Completes domain-control validation by writing TXT records at your registrar (DNS-01) or dropping a token under `.well-known/acme-challenge/` for an existing webserver to serve (HTTP-01).
-- Installs issued certs where they need to land. Today: Synology DSM, plain filesystem, nginx reload, HAProxy runtime API hot-swap, Kubernetes Secret.
-- Logs every step. Surfaces a real-time dashboard. Alerts before failures, not after.
-- Optionally federates across multiple `rotad` instances: one node renews, peers pick up the cert from a shared SurrealDB and install locally.
+Watches your CA-issued certs and knows when they're close to expiry. Generates fresh CSRs against persistent private keys you control. Submits reissue or renewal requests to the CA over that CA's API. Completes domain-control validation by writing TXT records at your registrar (DNS-01) or dropping a token under `.well-known/acme-challenge/` for an existing webserver to serve (HTTP-01). Installs issued certs where they need to land: Synology DSM, plain filesystem, nginx reload, HAProxy runtime API hot-swap, Kubernetes Secret. Logs every step. Surfaces a real-time dashboard. Alerts before failures, not after.
+
+Optionally federates across multiple `rotad` instances: one node renews, peers pick up the cert from a shared SurrealDB and install locally.
 
 ## Who this is for
 
-Operators who:
+Operators who run their own webservers, mail servers, dashboards, hobby boxes, homelabs. People who want renewal automation without surrendering DNS or HTTPS termination to a managed proxy. Anyone who'd rather drop a single Rust binary on a box than wrangle a Python toolchain just to keep certs fresh.
 
-- Run their own webservers, mail servers, dashboards, hobby boxes, homelabs.
-- Want renewal automation without surrendering DNS or HTTPS termination to a managed proxy.
-- Are comfortable with a single Rust binary and a YAML config.
-- Don't want a sprawling Python toolchain just to keep certs fresh.
-
-If you're already happy with `certbot`, this isn't a replacement; it's a different tradeoff for the operator who wants pluggable backends and built-in operational surface (audit log, dashboard, alerts, metrics, federation) in one process.
+If you're already happy with `certbot`, this isn't a replacement. It's a different tradeoff for the operator who wants pluggable backends and built-in operational surface (audit log, dashboard, alerts, metrics, federation) in one process.
 
 ## License
 

@@ -48,7 +48,7 @@ audit:
   password_file: /etc/rota/secrets/surreal.password
 ```
 
-`endpoint` accepts `mem://`, `file://path`, `ws://`, `wss://`, `http://`, `https://`. Embedded engines (`mem://`, `file://`) skip auth; remote engines need `username` + `password_file`.
+`endpoint` accepts `mem://`, `file://path`, `ws://`, `wss://`, `http://`, `https://`. Embedded engines (`mem://`, `file://`) skip auth; remote engines need `username` and `password_file`.
 
 ## CA accounts
 
@@ -62,7 +62,7 @@ namecheap:
   client_ip: 192.0.2.1
 ```
 
-`client_ip` must be on the account's whitelisted IPs in Namecheap, or the API rejects every call. Same credentials authenticate both the CA backend (reissue) and the DCV backend (DNS).
+`client_ip` must be on the account's whitelisted IPs in Namecheap, or the API rejects every call. The same credentials authenticate both the CA backend (reissue) and the DCV backend (DNS).
 
 ### `cloudflare`
 
@@ -87,10 +87,10 @@ acme:
 
 Common directory URLs:
 
-- Let's Encrypt prod: `https://acme-v02.api.letsencrypt.org/directory`
-- Let's Encrypt staging: `https://acme-staging-v02.api.letsencrypt.org/directory`
-- ZeroSSL: `https://acme.zerossl.com/v2/DV90`
-- BuyPass: `https://api.buypass.com/acme/directory`
+* Let's Encrypt prod: `https://acme-v02.api.letsencrypt.org/directory`
+* Let's Encrypt staging: `https://acme-staging-v02.api.letsencrypt.org/directory`
+* ZeroSSL: `https://acme.zerossl.com/v2/DV90`
+* BuyPass: `https://api.buypass.com/acme/directory`
 
 `account_credentials_file` is created on first run; treat like a private key (mode 0o600).
 
@@ -105,7 +105,7 @@ cluster:
   lease_seconds: 60     # refresh cadence is lease/3 (~20s here)
 ```
 
-Requires `audit.kind: surrealdb` because the lock + cert blobs live in that database. See the [federation runbook](./federation.md) for end-to-end setup.
+Requires `audit.kind: surrealdb` because the lock and cert blobs live in that database. See the [federation runbook](./federation.md) for end-to-end setup.
 
 ## `alerts`
 
@@ -183,8 +183,8 @@ install:
 
 ## Migration from earlier versions
 
-### v0.5 → v0.6
+### v0.5 to v0.6
 
-- `rota.yaml`: rename `registrar:` → `dcv:` on every cert. The kind values (`namecheap`, `cloudflare`) are unchanged; only the parent field name moves.
-- New optional `cluster:` block enables multi-host federation.
-- Wire protocol bumped from 1 to 2 (`CertSummary.registrar_backend` → `dcv_backend`). The `rota` CLI must upgrade alongside `rotad`; older clients hit a clean version-mismatch error rather than silent misparse.
+* `rota.yaml`: rename `registrar:` to `dcv:` on every cert. The kind values (`namecheap`, `cloudflare`) are unchanged; only the parent field name moves.
+* New optional `cluster:` block enables multi-host federation.
+* Wire protocol bumped from 1 to 2 (`CertSummary.registrar_backend` becomes `dcv_backend`). The `rota` CLI must upgrade alongside `rotad`; older clients hit a clean version-mismatch error rather than silent misparse.
