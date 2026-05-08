@@ -12,9 +12,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use rota_core::cluster::ClusterCoordinator;
 use rota_core::config::{AuditSpec, RotaConfig};
 use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
+use rota_daemon::cluster::NoOpCoordinator;
 use rota_daemon::dashboard::{self, DashboardState};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
@@ -69,6 +71,13 @@ async fn main() -> Result<()> {
   let audit = build_audit(&config).await?;
   info!(backend = %audit.name(), "audit store ready");
 
+  let cluster = build_cluster(&config)?;
+  info!(
+    coordinator = %cluster.name(),
+    node = %cluster.node_id(),
+    "cluster coordinator bound"
+  );
+
   let renewer = Arc::new(CertRenewer::new(Arc::clone(&audit)));
   let bundles = Arc::new(bundles);
 
@@ -86,7 +95,8 @@ async fn main() -> Result<()> {
       failure_cooldown: interval,
     },
   )
-  .with_alerts(Arc::clone(&alerts));
+  .with_alerts(Arc::clone(&alerts))
+  .with_cluster(Arc::clone(&cluster));
 
   let socket_server = SocketServer::new(
     Arc::clone(&bundles),
@@ -113,16 +123,44 @@ async fn main() -> Result<()> {
       tracing::error!(error = %err, "dashboard failed");
     }
   });
+  let cluster_task = {
+    let cluster = Arc::clone(&cluster);
+    tokio::spawn(async move {
+      if let Err(err) = cluster.run().await {
+        tracing::error!(error = %err, "cluster coordinator failed");
+      }
+    })
+  };
 
-  // Any task returning is unexpected (all three should loop
+  // Any task returning is unexpected (all four should loop
   // forever). When one returns, log and exit; the supervisor
   // (systemd, Container Manager) restarts the daemon.
   tokio::select! {
     _ = scheduler_task => tracing::warn!("scheduler task exited"),
     _ = socket_task => tracing::warn!("socket task exited"),
     _ = dashboard_task => tracing::warn!("dashboard task exited"),
+    _ = cluster_task => tracing::warn!("cluster coordinator task exited"),
   }
   Ok(())
+}
+
+/// Construct the cluster coordinator from config. This PR ships only
+/// the NoOp coordinator (single-node, always leader); the SurrealDB
+/// coordinator that drives real federation lands alongside cert
+/// distribution in the follow-up PR. We still parse `cluster.enabled`
+/// here so operators get a clear "not yet implemented" error instead
+/// of silent single-node behaviour when their config requested a
+/// cluster.
+fn build_cluster(config: &RotaConfig) -> Result<Arc<dyn ClusterCoordinator>> {
+  match &config.cluster {
+    None => Ok(Arc::new(NoOpCoordinator::new("local".to_owned()))),
+    Some(spec) if !spec.enabled => Ok(Arc::new(NoOpCoordinator::new(spec.node_id.clone()))),
+    Some(spec) => Err(anyhow::anyhow!(
+      "cluster.enabled = true (node_id = {}) but this build does not yet ship a clustering coordinator; \
+       upgrade to a build that lands cert distribution to followers",
+      spec.node_id,
+    )),
+  }
 }
 
 async fn build_audit(config: &RotaConfig) -> Result<Arc<dyn AuditStore>> {

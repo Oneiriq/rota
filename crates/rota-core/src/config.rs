@@ -35,6 +35,12 @@ pub struct RotaConfig {
   /// cert names ACME as its CA.
   #[serde(default)]
   pub acme: Option<AcmeAccount>,
+  /// Cluster federation settings. Omit (or set `enabled: false`) for
+  /// the single-node default; the scheduler always sweeps. Enabling
+  /// requires a SurrealDB audit backend (the lock lives in the same
+  /// database) and a unique `node_id` per rotad instance.
+  #[serde(default)]
+  pub cluster: Option<ClusterSpec>,
   /// Daemon-wide alert sinks. Every event fans out to every entry,
   /// so operators can mix (e.g.) email + webhook in one config.
   /// Empty or omitted = silent (renewal failures still hit the audit
@@ -148,6 +154,29 @@ pub struct CloudflareAccount {
   /// Path to a file containing the API token. Read at runtime so
   /// the secret never sits in the parsed config tree.
   pub api_token_file: PathBuf,
+}
+
+/// Cluster federation settings. Multiple rotad instances pointing
+/// at the same SurrealDB audit store elect a single leader to run
+/// the renewal scheduler; followers stand by for failover.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterSpec {
+  /// Toggle. `false` (default if unset) is identical to omitting the
+  /// `cluster:` block: the daemon runs as a single node.
+  #[serde(default)]
+  pub enabled: bool,
+  /// Stable id for this rotad instance. Must be unique across
+  /// cluster members. Convention: hostname, or a deployment label.
+  pub node_id: String,
+  /// Lease duration in seconds. The coordinator refreshes the
+  /// leader lock at lease/3, so a lease of 60s gives a 20s refresh
+  /// cadence and a worst-case 60s failover window.
+  #[serde(default = "default_cluster_lease_seconds")]
+  pub lease_seconds: u64,
+}
+
+fn default_cluster_lease_seconds() -> u64 {
+  60
 }
 
 /// Account-wide ACME directory + account material.
@@ -558,6 +587,43 @@ certs: []
       }
       _ => panic!("expected webhook alert"),
     }
+  }
+
+  #[test]
+  fn parses_cluster_spec_with_explicit_lease() {
+    let yaml = r#"
+cluster:
+  enabled: true
+  node_id: host-a
+  lease_seconds: 90
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    let cluster = cfg.cluster.expect("cluster block required");
+    assert!(cluster.enabled);
+    assert_eq!(cluster.node_id, "host-a");
+    assert_eq!(cluster.lease_seconds, 90);
+  }
+
+  #[test]
+  fn cluster_lease_seconds_defaults_to_60() {
+    let yaml = r#"
+cluster:
+  enabled: false
+  node_id: standalone
+certs: []
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    let cluster = cfg.cluster.expect("cluster block required");
+    assert!(!cluster.enabled);
+    assert_eq!(cluster.lease_seconds, 60);
+  }
+
+  #[test]
+  fn missing_cluster_block_parses() {
+    let yaml = "certs: []\n";
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(cfg.cluster.is_none());
   }
 
   #[test]

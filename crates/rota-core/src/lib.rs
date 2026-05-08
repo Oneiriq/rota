@@ -19,6 +19,7 @@
 
 pub mod backend;
 pub mod cert;
+pub mod cluster;
 pub mod config;
 pub mod error;
 pub mod protocol;

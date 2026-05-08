@@ -20,6 +20,18 @@ namecheap:
   username: your-namecheap-username
   client_ip: 192.0.2.1
 
+# Cluster federation. Multiple rotad instances pointing at the same
+# SurrealDB audit store elect a single leader to run the renewal
+# scheduler; followers stand by for failover. Omit (or set
+# enabled: false) for the single-node default. Cert distribution to
+# followers lands in a follow-up release; today's build accepts the
+# config but errors on enabled: true until the SurrealDB-backed
+# coordinator ships.
+# cluster:
+#   enabled: true
+#   node_id: host-a       # unique per node
+#   lease_seconds: 60     # refresh cadence is lease/3 (~20s here)
+
 # Daemon-wide alert sinks. Every event fans out to every entry, so
 # you can mix (e.g.) email + webhook in one config. Omit this block
 # entirely for silent operation; renewal failures still hit the audit

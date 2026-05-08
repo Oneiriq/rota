@@ -3,10 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use std::sync::atomic::AtomicBool;
+
 use rota_core::backend::{
   AlertBackend, AlertEvent, AlertKind, CABackend, DcvBackend, DcvChallenge, InstallBackend,
   IssuedCert,
 };
+use rota_core::cluster::ClusterCoordinator;
 use rota_core::config::{CaSpec, CertConfig, DcvSpec, InstallSpec};
 use rota_core::Result;
 use tokio::sync::Mutex as TokioMutex;
@@ -429,6 +432,90 @@ async fn no_alert_dispatched_on_renewal_success() {
     recorder.events.lock().await.is_empty(),
     "successful renewal must not emit a RenewalFailed alert"
   );
+}
+
+/// Cluster coordinator with a flippable leadership state. Lets
+/// scheduler tests assert that a sweep is gated on `is_leader()`.
+struct ToggleCluster {
+  node_id: String,
+  is_leader: AtomicBool,
+}
+
+impl ToggleCluster {
+  fn new(is_leader: bool) -> Self {
+    Self {
+      node_id: "test-node".to_owned(),
+      is_leader: AtomicBool::new(is_leader),
+    }
+  }
+
+  fn set_leader(&self, value: bool) {
+    self.is_leader.store(value, Ordering::Release);
+  }
+}
+
+#[async_trait]
+impl ClusterCoordinator for ToggleCluster {
+  fn name(&self) -> &str {
+    "toggle"
+  }
+  fn node_id(&self) -> &str {
+    &self.node_id
+  }
+  fn is_leader(&self) -> bool {
+    self.is_leader.load(Ordering::Acquire)
+  }
+  async fn run(&self) -> Result<()> {
+    std::future::pending::<()>().await;
+    Ok(())
+  }
+}
+
+#[tokio::test]
+async fn follower_skips_sweep_entirely() {
+  let install = Arc::new(ProbedInstall::new(None));
+  let (sched_default, ca, install) = build_scheduler(
+    "follower-test",
+    Arc::clone(&install),
+    30,
+    Duration::from_secs(60),
+  )
+  .await;
+
+  let cluster = Arc::new(ToggleCluster::new(false));
+  let scheduler = sched_default.with_cluster(Arc::clone(&cluster) as Arc<dyn ClusterCoordinator>);
+
+  scheduler.sweep().await;
+
+  // Cluster says we're a follower: nothing should have been
+  // attempted, even though install reports no cert installed.
+  assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 0);
+  assert_eq!(install.install_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn promotion_to_leader_resumes_sweeps() {
+  let install = Arc::new(ProbedInstall::new(None));
+  let (sched_default, ca, install) = build_scheduler(
+    "promotion-test",
+    Arc::clone(&install),
+    30,
+    Duration::from_secs(60),
+  )
+  .await;
+
+  let cluster = Arc::new(ToggleCluster::new(false));
+  let scheduler = sched_default.with_cluster(Arc::clone(&cluster) as Arc<dyn ClusterCoordinator>);
+
+  // First sweep is suppressed.
+  scheduler.sweep().await;
+  assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 0);
+
+  // Promote to leader; next sweep proceeds.
+  cluster.set_leader(true);
+  scheduler.sweep().await;
+  assert_eq!(ca.submit_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(install.install_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

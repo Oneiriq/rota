@@ -17,6 +17,7 @@
 
 pub mod audit;
 pub mod backends;
+pub mod cluster;
 pub mod dashboard;
 pub mod metrics;
 pub mod renewer;

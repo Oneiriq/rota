@@ -28,12 +28,14 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rota_core::backend::{AlertBackend, AlertEvent, AlertKind};
 use rota_core::cert::parse_not_after;
+use rota_core::cluster::ClusterCoordinator;
 use rota_core::secrets::redact;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::audit::RenewalStatus;
 use crate::backends::CertBackends;
+use crate::cluster::NoOpCoordinator;
 use crate::metrics;
 use crate::renewer::CertRenewer;
 
@@ -57,6 +59,7 @@ pub struct Scheduler {
   bundles: Arc<Vec<CertBackends>>,
   renewer: Arc<CertRenewer>,
   alerts: Arc<Vec<Arc<dyn AlertBackend>>>,
+  cluster: Arc<dyn ClusterCoordinator>,
   config: SchedulerConfig,
   state: Arc<Mutex<HashMap<String, CertState>>>,
 }
@@ -71,6 +74,7 @@ impl Scheduler {
       bundles,
       renewer,
       alerts: Arc::new(Vec::new()),
+      cluster: Arc::new(NoOpCoordinator::new("local".to_owned())),
       config,
       state: Arc::new(Mutex::new(HashMap::new())),
     }
@@ -81,6 +85,15 @@ impl Scheduler {
   /// configure alerts keep working unchanged.
   pub fn with_alerts(mut self, alerts: Arc<Vec<Arc<dyn AlertBackend>>>) -> Self {
     self.alerts = alerts;
+    self
+  }
+
+  /// Attach a cluster coordinator. The scheduler skips its sweep on
+  /// any tick where the coordinator reports follower mode. Builder-
+  /// style so single-node call sites keep working unchanged
+  /// (defaults to a NoOpCoordinator that always reports leader).
+  pub fn with_cluster(mut self, cluster: Arc<dyn ClusterCoordinator>) -> Self {
+    self.cluster = cluster;
     self
   }
 
@@ -104,8 +117,17 @@ impl Scheduler {
   }
 
   /// Single sweep over every bundle. Public for the future
-  /// `rota renew` CLI hook.
+  /// `rota renew` CLI hook. Followers (cluster mode, lock not held)
+  /// skip the sweep silently; the leader keeps doing the work.
   pub async fn sweep(&self) {
+    if !self.cluster.is_leader() {
+      tracing::debug!(
+        coordinator = %self.cluster.name(),
+        node = %self.cluster.node_id(),
+        "scheduler sweep skipped: follower mode"
+      );
+      return;
+    }
     for bundle in self.bundles.iter() {
       if self.should_renew(bundle).await {
         self.attempt_renewal(bundle).await;
