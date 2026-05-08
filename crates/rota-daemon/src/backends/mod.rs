@@ -12,6 +12,7 @@ pub mod cloudflare;
 pub mod dsm;
 pub mod email;
 pub mod filesystem;
+pub mod haproxy;
 pub mod namecheap;
 pub mod nginx;
 pub mod webhook;
@@ -30,6 +31,7 @@ use cloudflare::{CloudflareClient, CloudflareRegistrar};
 use dsm::DsmInstall;
 use email::{EmailAlert, EmailAlertParams};
 use filesystem::FilesystemInstall;
+use haproxy::HaproxyInstall;
 use namecheap::{NamecheapCa, NamecheapClient, NamecheapCreds, NamecheapRegistrar};
 use nginx::NginxInstall;
 use webhook::{WebhookAlert, WebhookAlertParams};
@@ -182,6 +184,16 @@ fn build_install(spec: &InstallSpec, cert: &CertConfig) -> Result<Option<Arc<dyn
       directory.clone(),
       cert.id.clone(),
       reload_command.clone(),
+    )))),
+    InstallSpec::Haproxy {
+      directory,
+      socket_path,
+      cert_storage_name,
+    } => Ok(Some(Arc::new(HaproxyInstall::new(
+      directory.clone(),
+      cert.id.clone(),
+      socket_path.clone(),
+      cert_storage_name.clone(),
     )))),
   }
 }

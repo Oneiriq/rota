@@ -60,5 +60,10 @@ certs:
       #   filesystem: { directory: /etc/ssl/example }
       #   nginx:      { directory: /etc/nginx/certs/example,
       #                 reload_command: ["systemctl", "reload", "nginx"] }
-      # nginx defaults reload_command to ["nginx", "-s", "reload"] if
-      # the field is omitted.
+      #   haproxy:    { directory: /etc/haproxy/certs,
+      #                 socket_path: /run/haproxy/admin.sock,
+      #                 cert_storage_name: /etc/haproxy/certs/example.pem }
+      # nginx defaults reload_command to ["nginx", "-s", "reload"]
+      # if the field is omitted. haproxy uses the runtime API for
+      # zero-downtime hot-swap; expose admin socket in haproxy.cfg
+      # via `stats socket /run/haproxy/admin.sock mode 660 level admin`.

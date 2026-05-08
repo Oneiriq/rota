@@ -337,6 +337,28 @@ pub enum InstallSpec {
     #[serde(default)]
     reload_command: Option<Vec<String>>,
   },
+  /// Filesystem write + HAProxy runtime API hot-swap. Files land in
+  /// `<directory>` using the same naming convention as `Filesystem`
+  /// (so an operator restart still reads the latest cert from disk),
+  /// then the daemon pushes the new cert to HAProxy's admin socket
+  /// using the runtime API: `set ssl cert <storage_name>` followed
+  /// by `commit ssl cert <storage_name>`. No reload, no dropped
+  /// connections. Requires HAProxy 2.x or later with the admin
+  /// socket exposed (`stats socket /run/haproxy/admin.sock mode 660
+  /// level admin` in the HAProxy config).
+  Haproxy {
+    /// Directory to land the cert + chain + key bundle in (used
+    /// both for operator visibility and to feed `current_cert_pem`
+    /// without round-tripping through the runtime API).
+    directory: PathBuf,
+    /// Path to HAProxy's admin socket. Common defaults:
+    /// `/run/haproxy/admin.sock`, `/var/run/haproxy.sock`.
+    socket_path: PathBuf,
+    /// Storage name HAProxy uses internally for the cert. Matches
+    /// the path declared in `bind ... ssl crt <name>` in haproxy.cfg
+    /// (or under `crt-list`).
+    cert_storage_name: String,
+  },
 }
 
 fn default_db_path() -> PathBuf {
@@ -591,6 +613,40 @@ certs:
         );
       }
       _ => panic!("expected nginx install"),
+    }
+  }
+
+  #[test]
+  fn parses_haproxy_install_variant() {
+    let yaml = r#"
+namecheap:
+  api_key_file: /tmp/k
+  username: u
+  client_ip: 1.2.3.4
+certs:
+  - id: example-haproxy
+    domains: [example.org]
+    key_path: /tmp/example.key
+    ca: { kind: namecheap, ssl_id: 1 }
+    registrar: { kind: namecheap }
+    install:
+      kind: haproxy
+      directory: /etc/haproxy/certs
+      socket_path: /run/haproxy/admin.sock
+      cert_storage_name: /etc/haproxy/certs/example.pem
+"#;
+    let cfg: RotaConfig = serde_yaml::from_str(yaml).unwrap();
+    match &cfg.certs[0].install {
+      InstallSpec::Haproxy {
+        directory,
+        socket_path,
+        cert_storage_name,
+      } => {
+        assert_eq!(directory, &PathBuf::from("/etc/haproxy/certs"));
+        assert_eq!(socket_path, &PathBuf::from("/run/haproxy/admin.sock"));
+        assert_eq!(cert_storage_name, "/etc/haproxy/certs/example.pem");
+      }
+      _ => panic!("expected haproxy install"),
     }
   }
 
