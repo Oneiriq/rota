@@ -22,6 +22,7 @@ pub mod backend;
 pub mod cert;
 pub mod config;
 pub mod error;
+pub mod protocol;
 pub mod secrets;
 
 pub use error::{Error, Result};

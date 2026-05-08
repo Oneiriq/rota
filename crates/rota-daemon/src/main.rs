@@ -17,6 +17,7 @@ use rota_daemon::audit::{AuditStore, SqliteAuditStore};
 use rota_daemon::backends;
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
+use rota_daemon::socket::SocketServer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -79,11 +80,27 @@ async fn main() -> Result<()> {
     },
   );
 
-  // Next PR: bind the CLI UNIX socket and the dashboard HTTP
-  // listener as their own tasks alongside the scheduler. For now
-  // the scheduler is the only long-running task and we just await
-  // it; SIGINT exits the process.
-  scheduler.run().await;
+  let socket_server = SocketServer::new(
+    Arc::clone(&bundles),
+    Arc::clone(&audit),
+    Arc::clone(&renewer),
+  );
+  let socket_path = config.daemon.socket_path.clone();
+
+  let scheduler_task = tokio::spawn(scheduler.run());
+  let socket_task = tokio::spawn(async move {
+    if let Err(err) = socket_server.serve(socket_path).await {
+      tracing::error!(error = %err, "control socket failed");
+    }
+  });
+
+  // Either task running to completion is unexpected (both should
+  // loop forever). When one returns, log and exit; the supervisor
+  // (systemd, Container Manager) restarts the daemon.
+  tokio::select! {
+    _ = scheduler_task => tracing::warn!("scheduler task exited"),
+    _ = socket_task => tracing::warn!("socket task exited"),
+  }
   Ok(())
 }
 
