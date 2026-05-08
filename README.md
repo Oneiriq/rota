@@ -68,11 +68,10 @@ Each entry in `rota.yaml` picks one of each, so a mixed fleet runs through the s
 
 ## Status
 
-v0.2.0. Three control surfaces wired against the same state. The scheduler from v0.1.0 ticks renewals on `check_interval_seconds`. A `rota` CLI talks to `rotad` over a UNIX socket for `status`, `renew --cert <id>`, and `log <cert>`. A maud + htmx dashboard at `daemon.listen_addr` shows the cert table, per-cert detail, and a manual "renew now" button. ACME, alerts, and more install targets are next.
+v0.3.0. Two new vendor backends. ACME CA so rota can issue against Let's Encrypt, ZeroSSL (with EAB), BuyPass, or any directory that follows RFC 8555. Cloudflare registrar so DNS-01 DCV works against Cloudflare-hosted zones with a scoped API token. Audit, scheduler, CLI, and dashboard from earlier releases are unchanged.
 
 ## Roadmap
 
-- v0.3: ACME backend (Let's Encrypt, ZeroSSL). Cloudflare registrar backend.
 - v0.4: Email + webhook alerts. Prometheus `/metrics` endpoint.
 - v0.5: Kubernetes Secret + nginx reload + HAProxy install backends.
 - v0.6: HTTP-01 DCV strategy, multi-host federation.
