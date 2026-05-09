@@ -81,8 +81,21 @@ impl NamecheapCa {
     let replaced_by = resp
       .first_attribute("SSLGetInfoResult", "ReplacedBy")
       .and_then(|s| s.parse::<u64>().ok());
-    let cert_pem = resp.first_text("CertificateReturned").unwrap_or_default();
-    let chain_pem = resp.first_text("CACertificate").unwrap_or_default();
+    // `Returncertificate=true&Returntype=Individual` packs the leaf
+    // and chain inside nested `<Certificate>` elements that no naive
+    // element-name lookup can disambiguate. The actual PEM armor is
+    // unique enough to scan for directly. Document order: the first
+    // CERTIFICATE block is the leaf, subsequent ones are the chain
+    // (issuer-up); the CSR present in the same response carries the
+    // `CERTIFICATE REQUEST` label and is skipped automatically.
+    let pem_blocks = resp.pem_blocks("CERTIFICATE");
+    let cert_pem = pem_blocks.first().cloned().unwrap_or_default();
+    let chain_pem = pem_blocks
+      .iter()
+      .skip(1)
+      .cloned()
+      .collect::<Vec<_>>()
+      .join("\n");
 
     Ok(NamecheapCertInfo {
       status,

@@ -84,6 +84,38 @@ impl ApiResponse {
     }
   }
 
+  /// Find every PEM block of the given label (e.g. `"CERTIFICATE"`)
+  /// in the raw response and return them in document order.
+  ///
+  /// Cuts through Namecheap's nested-element wrapping for cert
+  /// payloads: `namecheap.ssl.getInfo&Returncertificate=true` packs
+  /// the leaf as `<Certificates><Certificate><![CDATA[PEM]]></Certificate>`
+  /// and EACH chain cert under
+  /// `<Certificates><CaCertificates><Certificate Type="INTERMEDIATE">
+  ///    <Certificate><![CDATA[PEM]]></Certificate></Certificate></CaCertificates>`,
+  /// which `first_text` can't disambiguate by element name alone.
+  /// Scanning for the literal PEM armor avoids walking that mess.
+  ///
+  /// `BEGIN CERTIFICATE-----` does NOT match `BEGIN CERTIFICATE REQUEST-----`
+  /// (the trailing `-----` differs), so a CSR present in the same
+  /// response is safely skipped when querying for `"CERTIFICATE"`.
+  pub fn pem_blocks(&self, label: &str) -> Vec<String> {
+    let begin = format!("-----BEGIN {label}-----");
+    let end = format!("-----END {label}-----");
+    let mut out = Vec::new();
+    let mut rest = self.raw.as_str();
+    while let Some(b) = rest.find(&begin) {
+      let after_begin = &rest[b..];
+      let Some(e) = after_begin.find(&end) else {
+        break;
+      };
+      let block_end = e + end.len();
+      out.push(after_begin[..block_end].to_owned());
+      rest = &after_begin[block_end..];
+    }
+    out
+  }
+
   /// Find the first occurrence of an element by name and return one
   /// of its attribute values.
   pub fn first_attribute(&self, element: &str, attr: &str) -> Option<String> {
@@ -221,6 +253,76 @@ mod tests {
       resp.first_text("Target").as_deref(),
       Some("46513AD29B078AF908AD3CDF354A8599.6CD5AE645BCCE1FAA847D98385AFF6CE.69ff68dc5168c.comodoca.com")
     );
+  }
+
+  #[test]
+  fn pem_blocks_extracts_leaf_plus_chain_in_document_order() {
+    let body = r#"<?xml version="1.0"?>
+<ApiResponse Status="OK">
+ <CommandResponse>
+  <SSLGetInfoResult Status="active">
+   <CertificateDetails>
+    <CSR><![CDATA[-----BEGIN CERTIFICATE REQUEST-----
+CSR_BODY
+-----END CERTIFICATE REQUEST-----]]></CSR>
+    <Certificates CertificateReturned="true" ReturnType="INDIVIDUAL">
+     <Certificate><![CDATA[-----BEGIN CERTIFICATE-----
+LEAF_BODY
+-----END CERTIFICATE-----]]></Certificate>
+     <CaCertificates>
+      <Certificate Type="INTERMEDIATE">
+       <Certificate><![CDATA[-----BEGIN CERTIFICATE-----
+INT1_BODY
+-----END CERTIFICATE-----]]></Certificate>
+      </Certificate>
+      <Certificate Type="INTERMEDIATE">
+       <Certificate><![CDATA[-----BEGIN CERTIFICATE-----
+INT2_BODY
+-----END CERTIFICATE-----]]></Certificate>
+      </Certificate>
+     </CaCertificates>
+    </Certificates>
+   </CertificateDetails>
+  </SSLGetInfoResult>
+ </CommandResponse>
+</ApiResponse>"#;
+    let resp = parse_response(body).unwrap();
+    let blocks = resp.pem_blocks("CERTIFICATE");
+    assert_eq!(blocks.len(), 3, "leaf + 2 intermediates, CSR skipped");
+    assert!(blocks[0].contains("LEAF_BODY"), "first block is the leaf");
+    assert!(
+      blocks[1].contains("INT1_BODY"),
+      "second block is intermediate 1"
+    );
+    assert!(
+      blocks[2].contains("INT2_BODY"),
+      "third block is intermediate 2"
+    );
+    // CSR has the CERTIFICATE REQUEST label and must NOT be picked up
+    // when querying for the CERTIFICATE label.
+    assert!(!blocks.iter().any(|b| b.contains("CSR_BODY")));
+  }
+
+  #[test]
+  fn pem_blocks_does_not_match_csr_label() {
+    let body = r#"<?xml version="1.0"?>
+<root>
+  <CSR><![CDATA[-----BEGIN CERTIFICATE REQUEST-----
+ABCD
+-----END CERTIFICATE REQUEST-----]]></CSR>
+</root>"#;
+    let resp = parse_response(body).unwrap();
+    let blocks = resp.pem_blocks("CERTIFICATE");
+    assert!(
+      blocks.is_empty(),
+      "BEGIN CERTIFICATE----- has trailing dashes immediately after CERTIFICATE; BEGIN CERTIFICATE REQUEST----- does not match"
+    );
+  }
+
+  #[test]
+  fn pem_blocks_returns_empty_when_no_match() {
+    let resp = parse_response("<root></root>").unwrap();
+    assert!(resp.pem_blocks("CERTIFICATE").is_empty());
   }
 
   #[test]
