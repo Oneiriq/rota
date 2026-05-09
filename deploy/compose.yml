@@ -1,0 +1,37 @@
+# Reference deploy compose template for a single-node rota instance.
+#
+# This file is checked into the public rota repo. It does NOT contain
+# operator data. To deploy: copy this file plus rota.yaml + secrets +
+# private keys into a host workdir (the standard pattern is
+# `/volume1/docker/rota/` on Synology), then `docker compose up -d`
+# from there. Never commit your operator copy back to this repo.
+#
+# Expected workdir layout:
+#
+#   ./compose.yml           # this file (copied)
+#   ./rota.yaml             # your real config (mode 600)
+#   ./secrets/              # mode 700; per-vendor API keys mode 600
+#   ./keys/                 # mode 700; per-cert private keys mode 600
+#   ./data/                 # auto-created on first run; SQLite audit DB
+#   ./run/                  # auto-created on first run; UNIX socket dir
+#
+# CLI access from the host: `docker exec rota /usr/local/bin/rota status`.
+
+services:
+  rotad:
+    image: ghcr.io/oneiriq/rota:latest
+    container_name: rota
+    restart: unless-stopped
+    command: ["--config", "/etc/rota/rota.yaml"]
+    ports:
+      # Dashboard + /metrics. Bind to 127.0.0.1 if you front this with
+      # a reverse proxy.
+      - "${ROTA_DASHBOARD_PORT:-127.0.0.1:7878}:7878"
+    volumes:
+      - ./rota.yaml:/etc/rota/rota.yaml:ro
+      - ./secrets:/etc/rota/secrets:ro
+      - ./keys:/var/lib/rota/keys
+      - ./data:/var/lib/rota
+      - ./run:/var/run
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
