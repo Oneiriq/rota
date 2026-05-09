@@ -37,9 +37,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 x509-parser = "0.16"
 time = "0.3"
-md-5 = "0.10"
-sha2 = "0.10"
-hex = "0.4"
 instant-acme = "0.8"
 pem = "3"
 oneiriq-surql = { version = "0.2", default-features = false, features = ["client-rustls"] }
