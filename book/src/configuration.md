@@ -50,6 +50,26 @@ audit:
 
 `endpoint` accepts `mem://`, `file://path`, `ws://`, `wss://`, `http://`, `https://`. Embedded engines (`mem://`, `file://`) skip auth; remote engines need `username` and `password_file`.
 
+## Secrets and environment variables
+
+Every `*_file:` field in this config can read from an environment variable instead of a file by setting the path to `env:VAR_NAME`. Every operator-set `String` field accepts `${VAR}` interpolation against the process environment at config-load time. An unset referenced variable is a fatal startup error.
+
+```yaml
+namecheap:
+  api_key_file: env:NAMECHEAP_API_KEY     # secret comes from env, not a file
+  username: ${NAMECHEAP_USERNAME}         # inline interpolation
+  client_ip: ${NAMECHEAP_CLIENT_IP}
+```
+
+This pairs with any secret-injection mechanism that exports env vars to the daemon process. Common shapes:
+
+* **Doppler**: run rotad as `doppler run --project rota --config prd -- rotad --config /etc/rota/rota.yaml`. Doppler injects `NAMECHEAP_API_KEY`, etc. into the child process.
+* **systemd LoadCredentialEncrypted=**: drops decrypted material into `$CREDENTIALS_DIRECTORY/<name>`. Reference via `env:` if you also export the value through `Environment=`, or point `*_file:` directly at the credentials path.
+* **HashiCorp Vault Agent**: writes a templated env file the systemd unit reads via `EnvironmentFile=`.
+* **Plain compose `env_file:`** for hosts where Doppler is overkill.
+
+Refusing to start when a referenced variable is unset means a misconfigured deploy fails loud at boot rather than silently calling a vendor API with an empty key.
+
 ## CA accounts
 
 ### `namecheap`

@@ -101,11 +101,7 @@ pub async fn open_client(spec: &AuditSpec) -> Result<DatabaseClient> {
   client.connect().await.map_err(map_err)?;
 
   if let (Some(user), Some(file)) = (username, password_file) {
-    let pwd = tokio::fs::read_to_string(file)
-      .await
-      .map_err(|e| Error::ConfigInvalid(format!("read {}: {e}", file.display())))?
-      .trim()
-      .to_owned();
+    let pwd = rota_core::secrets::read_secret(file)?;
     client
       .signin(&RootCredentials::new(user.clone(), pwd))
       .await

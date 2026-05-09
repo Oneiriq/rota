@@ -26,6 +26,7 @@ use rota_core::config::{
   AlertSpec, CaSpec, CertConfig, CloudflareAccount, DcvSpec, InstallSpec, NamecheapAccount,
   RotaConfig,
 };
+use rota_core::secrets::read_secret;
 use rota_core::{Error, Result};
 
 use acme::AcmeCa;
@@ -89,15 +90,7 @@ pub async fn build_from_config(config: &RotaConfig) -> Result<Vec<CertBackends>>
 }
 
 fn build_namecheap_client(account: &NamecheapAccount) -> Result<Arc<NamecheapClient>> {
-  let api_key = std::fs::read_to_string(&account.api_key_file)
-    .map_err(|e| {
-      Error::ConfigInvalid(format!(
-        "namecheap api_key_file {}: {e}",
-        account.api_key_file.display()
-      ))
-    })?
-    .trim()
-    .to_owned();
+  let api_key = read_secret(&account.api_key_file)?;
   let creds = NamecheapCreds {
     api_user: account
       .api_user
@@ -111,15 +104,7 @@ fn build_namecheap_client(account: &NamecheapAccount) -> Result<Arc<NamecheapCli
 }
 
 fn build_cloudflare_client(account: &CloudflareAccount) -> Result<Arc<CloudflareClient>> {
-  let token = std::fs::read_to_string(&account.api_token_file)
-    .map_err(|e| {
-      Error::ConfigInvalid(format!(
-        "cloudflare api_token_file {}: {e}",
-        account.api_token_file.display()
-      ))
-    })?
-    .trim()
-    .to_owned();
+  let token = read_secret(&account.api_token_file)?;
   Ok(CloudflareClient::new(token).into_arc())
 }
 
@@ -239,15 +224,7 @@ fn build_alert(spec: &AlertSpec) -> Result<Arc<dyn AlertBackend>> {
       from,
       to,
     } => {
-      let password = std::fs::read_to_string(password_file)
-        .map_err(|e| {
-          Error::ConfigInvalid(format!(
-            "email alert password_file {}: {e}",
-            password_file.display()
-          ))
-        })?
-        .trim()
-        .to_owned();
+      let password = read_secret(password_file)?;
       let alert = EmailAlert::new(EmailAlertParams {
         smtp_host: smtp_host.as_str(),
         smtp_port: *smtp_port,
@@ -266,18 +243,7 @@ fn build_alert(spec: &AlertSpec) -> Result<Arc<dyn AlertBackend>> {
     } => {
       let bearer_token = match bearer_token_file {
         None => None,
-        Some(path) => {
-          let token = std::fs::read_to_string(path)
-            .map_err(|e| {
-              Error::ConfigInvalid(format!(
-                "webhook alert bearer_token_file {}: {e}",
-                path.display()
-              ))
-            })?
-            .trim()
-            .to_owned();
-          Some(token)
-        }
+        Some(path) => Some(read_secret(path)?),
       };
       let timeout = timeout_seconds.map(std::time::Duration::from_secs);
       let alert = WebhookAlert::new(WebhookAlertParams {

@@ -52,6 +52,9 @@ pub struct RotaConfig {
 
 impl RotaConfig {
   /// Load a config file, returning a typed parse error on failure.
+  /// After parse, walks every operator-set string and resolves
+  /// `${VAR}` references against the process environment so the
+  /// daemon sees fully-resolved values.
   pub fn load(path: &Path) -> Result<Self> {
     if !path.exists() {
       return Err(Error::ConfigNotFound {
@@ -59,10 +62,72 @@ impl RotaConfig {
       });
     }
     let raw = std::fs::read_to_string(path)?;
-    serde_yaml::from_str(&raw).map_err(|err| Error::ConfigParse {
+    let mut cfg: Self = serde_yaml::from_str(&raw).map_err(|err| Error::ConfigParse {
       path: path.to_owned(),
       message: err.to_string(),
-    })
+    })?;
+    cfg.resolve_env()?;
+    Ok(cfg)
+  }
+
+  /// Walk operator-set string fields and expand `${VAR}` references.
+  /// Idempotent: calling on an already-resolved config is a no-op.
+  /// `*_file:` paths use the `env:NAME` sentinel handled in
+  /// [`crate::secrets::read_secret`] instead, so they are not touched
+  /// here.
+  pub fn resolve_env(&mut self) -> Result<()> {
+    use crate::secrets::expand_env;
+
+    if let Some(nc) = &mut self.namecheap {
+      nc.username = expand_env(&nc.username)?;
+      if let Some(au) = nc.api_user.as_mut() {
+        *au = expand_env(au)?;
+      }
+      nc.client_ip = expand_env(&nc.client_ip)?;
+    }
+    if let Some(acme) = &mut self.acme {
+      acme.directory_url = expand_env(&acme.directory_url)?;
+      if let Some(email) = acme.contact_email.as_mut() {
+        *email = expand_env(email)?;
+      }
+    }
+    if let Some(AuditSpec::Surrealdb {
+      endpoint,
+      namespace,
+      database,
+      username,
+      ..
+    }) = self.audit.as_mut()
+    {
+      *endpoint = expand_env(endpoint)?;
+      *namespace = expand_env(namespace)?;
+      *database = expand_env(database)?;
+      if let Some(u) = username.as_mut() {
+        *u = expand_env(u)?;
+      }
+    }
+    for alert in &mut self.alerts {
+      match alert {
+        AlertSpec::Email {
+          smtp_host,
+          username,
+          from,
+          to,
+          ..
+        } => {
+          *smtp_host = expand_env(smtp_host)?;
+          *username = expand_env(username)?;
+          *from = expand_env(from)?;
+          for addr in to.iter_mut() {
+            *addr = expand_env(addr)?;
+          }
+        }
+        AlertSpec::Webhook { url, .. } => {
+          *url = expand_env(url)?;
+        }
+      }
+    }
+    Ok(())
   }
 
   /// Look up a cert by id.

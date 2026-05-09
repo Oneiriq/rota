@@ -4,6 +4,22 @@
 # `rotad --config` points) and fill in your own values. Mode 600 if
 # any secrets are inlined; rota prefers to read them from referenced
 # files so they don't sit in this tree.
+#
+# Two ways to feed credentials without writing plaintext to disk:
+#
+#   `*_file:` paths accept the sentinel `env:VAR_NAME` to mean
+#   "read VAR_NAME from the process environment as the secret value":
+#       api_key_file: env:NAMECHEAP_API_KEY
+#
+#   `String` fields accept `${VAR}` interpolation against the process
+#   environment at config-load time:
+#       username: ${NAMECHEAP_USERNAME}
+#       client_ip: ${NAMECHEAP_CLIENT_IP}
+#
+# Pair either form with `doppler run -- rotad ...`, a Vault Agent
+# template, systemd LoadCredentialEncrypted=, or any other env-var
+# secret manager. An unset referenced variable is a fatal config
+# error so misconfigurations fail loud at startup, not at first use.
 
 daemon:
   database_path: /var/lib/rota/rota.db
@@ -19,6 +35,12 @@ namecheap:
   api_key_file: /etc/rota/secrets/namecheap-api.key
   username: your-namecheap-username
   client_ip: 192.0.2.1
+# Or, if a secret manager (Doppler, Vault, etc.) is exporting these
+# into the daemon's environment:
+# namecheap:
+#   api_key_file: env:NAMECHEAP_API_KEY
+#   username: ${NAMECHEAP_USERNAME}
+#   client_ip: ${NAMECHEAP_CLIENT_IP}
 
 # Cluster federation. Multiple rotad instances pointing at the same
 # SurrealDB audit store elect a single leader to run the renewal
