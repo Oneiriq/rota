@@ -31,6 +31,12 @@ jobs:
       - name: build book
         run: mdbook build book
       - uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages on first run so a clean clone of this
+          # repo gets a working docs site without manual repo-settings
+          # clicks. Was the silent failure on PRs #31, #32, #34 before
+          # Pages was POSTed to /repos/{owner}/{repo}/pages by hand.
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: book/book
