@@ -37,7 +37,14 @@ pub struct IssuedCert {
 /// lets the renewer hint at the CA's challenge-type selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChallengeKind {
+  /// ACME DNS-01: a TXT record at the challenge name.
   Dns01,
+  /// CNAME-shaped DNS DCV (Sectigo CSR-hash, Comodo legacy CNAME):
+  /// a CNAME record at the challenge name pointing to a CA-controlled
+  /// validation target. Distinct from `Dns01` because the record TYPE
+  /// drives the registrar's API and validators differ on hostname
+  /// rules between record types.
+  DnsCname,
   Http01,
 }
 
@@ -45,6 +52,7 @@ impl ChallengeKind {
   pub fn as_str(&self) -> &'static str {
     match self {
       Self::Dns01 => "dns-01",
+      Self::DnsCname => "dns-cname",
       Self::Http01 => "http-01",
     }
   }
@@ -66,6 +74,22 @@ pub enum DcvChallenge {
     /// Value the TXT record must hold.
     record_value: String,
     /// Time-to-live for the TXT record in seconds.
+    ttl: u32,
+  },
+  /// CNAME-shaped DNS DCV: publish a CNAME record at `record_name`
+  /// pointing to `record_value`. Sectigo (via Namecheap reissue)
+  /// uses this for the modern CSR-hash flow; the CA's validator
+  /// follows the CNAME and checks for a known structure under its
+  /// own zone (e.g. `comodoca.com`). The DCV backend writes a CNAME
+  /// rather than a TXT; otherwise mechanically identical to Dns01.
+  DnsCname {
+    /// FQDN of the CNAME record (e.g.
+    /// `_<MD5>.example.com`).
+    record_name: String,
+    /// Target FQDN the CNAME must point to (e.g.
+    /// `<SHA256_FIRST32>.<SHA256_LAST32>.<unique>.comodoca.com`).
+    record_value: String,
+    /// Time-to-live for the CNAME record in seconds.
     ttl: u32,
   },
   /// HTTP-01: serve `key_authorization` at
@@ -91,6 +115,7 @@ impl DcvChallenge {
   pub fn kind(&self) -> ChallengeKind {
     match self {
       Self::Dns01 { .. } => ChallengeKind::Dns01,
+      Self::DnsCname { .. } => ChallengeKind::DnsCname,
       Self::Http01 { .. } => ChallengeKind::Http01,
     }
   }
@@ -102,11 +127,11 @@ impl DcvChallenge {
   }
 
   /// Short label identifying *what* this challenge is for, for
-  /// audit log details. DNS-01 returns the record name; HTTP-01
-  /// returns the domain.
+  /// audit log details. DNS challenges return the record name;
+  /// HTTP-01 returns the domain.
   pub fn label(&self) -> String {
     match self {
-      Self::Dns01 { record_name, .. } => record_name.clone(),
+      Self::Dns01 { record_name, .. } | Self::DnsCname { record_name, .. } => record_name.clone(),
       Self::Http01 { domain, .. } => format!("{domain} (http-01)"),
     }
   }
