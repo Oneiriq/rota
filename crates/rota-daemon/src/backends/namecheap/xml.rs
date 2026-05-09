@@ -66,6 +66,14 @@ impl ApiResponse {
         Ok(Event::Text(e)) if inside => {
           return Some(e.unescape().ok()?.into_owned());
         }
+        // Namecheap wraps DCV record values in `<![CDATA[...]]>` so
+        // operator-supplied values (DNS labels with dots, URLs, etc.)
+        // pass through unescaped. quick-xml fires Event::CData for
+        // these, not Event::Text. Handling both keeps the helper
+        // robust to either encoding.
+        Ok(Event::CData(e)) if inside => {
+          return String::from_utf8(e.into_inner().into_owned()).ok();
+        }
         Ok(Event::End(e)) if e.local_name().as_ref() == element.as_bytes() => {
           inside = false;
         }
@@ -183,6 +191,35 @@ mod tests {
         .first_attribute("SSLReissueResult", "IsSuccess")
         .as_deref(),
       Some("true")
+    );
+  }
+
+  #[test]
+  fn first_text_unwraps_cdata() {
+    // Namecheap's actual reissue response wraps the DCV CNAME values
+    // in CDATA blocks. quick-xml fires Event::CData for these, not
+    // Event::Text, so the parser must handle both.
+    let body = r#"<?xml version="1.0"?>
+<ApiResponse Status="OK">
+  <CommandResponse>
+    <SSLReissueResult ID="34351741" IsSuccess="true">
+      <DNSDCValidation ValueAvailable="true">
+        <DNS domain="oneiric.dev">
+          <HostName><![CDATA[_6958EA56A4FE23DDF2C3EDA7B9B956A5.oneiric.dev]]></HostName>
+          <Target><![CDATA[46513AD29B078AF908AD3CDF354A8599.6CD5AE645BCCE1FAA847D98385AFF6CE.69ff68dc5168c.comodoca.com]]></Target>
+        </DNS>
+      </DNSDCValidation>
+    </SSLReissueResult>
+  </CommandResponse>
+</ApiResponse>"#;
+    let resp = parse_response(body).unwrap();
+    assert_eq!(
+      resp.first_text("HostName").as_deref(),
+      Some("_6958EA56A4FE23DDF2C3EDA7B9B956A5.oneiric.dev")
+    );
+    assert_eq!(
+      resp.first_text("Target").as_deref(),
+      Some("46513AD29B078AF908AD3CDF354A8599.6CD5AE645BCCE1FAA847D98385AFF6CE.69ff68dc5168c.comodoca.com")
     );
   }
 
