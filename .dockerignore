@@ -1,0 +1,11 @@
+target
+**/.git
+**/.DS_Store
+**/._*
+**/.AppleDouble
+book
+docs
+*.md
+deploy/README.md
+.github
+.claude
