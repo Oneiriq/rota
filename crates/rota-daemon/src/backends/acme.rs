@@ -127,16 +127,7 @@ async fn create_account(spec: &AcmeAccount) -> Result<Account> {
 }
 
 async fn load_eab(eab: &EabConfig) -> Result<ExternalAccountKey> {
-  let hmac = tokio::fs::read_to_string(&eab.hmac_key_file)
-    .await
-    .map_err(|e| {
-      Error::Ca(format!(
-        "read eab hmac {}: {e}",
-        eab.hmac_key_file.display()
-      ))
-    })?
-    .trim()
-    .to_owned();
+  let hmac = rota_core::secrets::read_secret(&eab.hmac_key_file)?;
   Ok(ExternalAccountKey::new(eab.kid.clone(), hmac.as_bytes()))
 }
 

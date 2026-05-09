@@ -1,15 +1,73 @@
-//! Best-effort redaction of secrets that show up in error strings
-//! and log messages.
+//! Two responsibilities, both about secrets in config + logs:
 //!
-//! Use this any time a string that may have come from an HTTP error,
-//! a vendor SDK, or a wrapped error chain is about to land in a log
-//! line, an audit row, or a user-facing error message. The Namecheap
-//! API in particular carries auth in URL query params (`ApiKey=...`),
-//! and `reqwest::Error`'s Debug impl embeds the request URL, so any
-//! error originating from a network call may surface the key
-//! verbatim. The function is best-effort: it strips the patterns we
-//! know about, and we add patterns as we find them. Non-matching
-//! input passes through unchanged.
+//! 1. [`redact`]: best-effort scrubbing of secret-shaped substrings
+//!    in error strings and log messages.
+//! 2. [`read_secret`] + [`expand_env`]: env-var resolution at
+//!    config-load time, so operators can drive rota.yaml from a
+//!    secret manager (Doppler, Vault agent, etc.) without writing
+//!    plaintext files to disk. `*_file:` paths accept an `env:NAME`
+//!    sentinel and `String` fields accept `${VAR}` interpolation.
+
+use std::path::Path;
+
+use crate::{Error, Result};
+
+/// Path-prefix sentinel for env-var-driven secrets. A `*_file:` field
+/// set to e.g. `env:NAMECHEAP_API_KEY` reads the named environment
+/// variable instead of opening a file.
+const ENV_PREFIX: &str = "env:";
+
+/// Read a secret. If `path` is `env:NAME`, returns the value of the
+/// named env var; otherwise reads the file at `path`. Trims trailing
+/// whitespace so a key file with a stray newline still produces the
+/// raw secret. Errors classify as [`Error::ConfigInvalid`] either way.
+pub fn read_secret(path: &Path) -> Result<String> {
+  if let Some(name) = env_ref(path) {
+    return read_env(&name);
+  }
+  let raw = std::fs::read_to_string(path)
+    .map_err(|e| Error::ConfigInvalid(format!("secret file {}: {e}", path.display())))?;
+  Ok(raw.trim().to_owned())
+}
+
+/// Expand `${VAR}` references in `s` against the process environment.
+/// Multiple references in one string are supported; literal `$` outside
+/// `${...}` passes through unchanged. An unset variable or an
+/// unterminated `${...}` returns [`Error::ConfigInvalid`].
+pub fn expand_env(s: &str) -> Result<String> {
+  if !s.contains("${") {
+    return Ok(s.to_owned());
+  }
+  let mut out = String::with_capacity(s.len());
+  let mut rest = s;
+  while let Some(i) = rest.find("${") {
+    out.push_str(&rest[..i]);
+    let after = &rest[i + 2..];
+    let end = after.find('}').ok_or_else(|| {
+      Error::ConfigInvalid(format!("unterminated ${{...}} in config string {s:?}"))
+    })?;
+    let var = &after[..end];
+    out.push_str(&read_env(var)?);
+    rest = &after[end + 1..];
+  }
+  out.push_str(rest);
+  Ok(out)
+}
+
+fn env_ref(path: &Path) -> Option<String> {
+  path
+    .to_str()
+    .and_then(|s| s.strip_prefix(ENV_PREFIX))
+    .map(|s| s.trim().to_owned())
+}
+
+fn read_env(name: &str) -> Result<String> {
+  std::env::var(name).map_err(|_| {
+    Error::ConfigInvalid(format!(
+      "env var {name} is referenced in config but not set in the process environment"
+    ))
+  })
+}
 
 const PATTERNS: &[&str] = &[
   // Namecheap API auth.
@@ -129,5 +187,77 @@ mod tests {
   #[test]
   fn empty_string_is_empty() {
     assert_eq!(redact(""), "");
+  }
+
+  // env-var resolution
+
+  use std::path::PathBuf;
+
+  #[test]
+  fn read_secret_from_file_trims_whitespace() {
+    let mut path = std::env::temp_dir();
+    path.push(format!("rota-secret-{}.txt", std::process::id()));
+    std::fs::write(&path, "abc123\n").unwrap();
+    assert_eq!(read_secret(&path).unwrap(), "abc123");
+    std::fs::remove_file(&path).ok();
+  }
+
+  #[test]
+  fn read_secret_resolves_env_prefix() {
+    std::env::set_var("ROTA_TEST_SECRET_RESOLVE", "from-env-resolved");
+    let path = PathBuf::from("env:ROTA_TEST_SECRET_RESOLVE");
+    assert_eq!(read_secret(&path).unwrap(), "from-env-resolved");
+    std::env::remove_var("ROTA_TEST_SECRET_RESOLVE");
+  }
+
+  #[test]
+  fn read_secret_errors_when_env_var_unset() {
+    let path = PathBuf::from("env:ROTA_TEST_SECRET_DEFINITELY_UNSET");
+    let err = read_secret(&path).unwrap_err();
+    assert!(err
+      .to_string()
+      .contains("ROTA_TEST_SECRET_DEFINITELY_UNSET"));
+  }
+
+  #[test]
+  fn expand_env_passthrough_when_no_braces() {
+    assert_eq!(expand_env("plain string").unwrap(), "plain string");
+    assert_eq!(expand_env("").unwrap(), "");
+  }
+
+  #[test]
+  fn expand_env_substitutes_single_var() {
+    std::env::set_var("ROTA_TEST_EXPAND_USER", "alice");
+    assert_eq!(expand_env("${ROTA_TEST_EXPAND_USER}").unwrap(), "alice");
+    assert_eq!(
+      expand_env("hi-${ROTA_TEST_EXPAND_USER}!").unwrap(),
+      "hi-alice!"
+    );
+    std::env::remove_var("ROTA_TEST_EXPAND_USER");
+  }
+
+  #[test]
+  fn expand_env_substitutes_multiple_vars() {
+    std::env::set_var("ROTA_TEST_EXPAND_A", "1");
+    std::env::set_var("ROTA_TEST_EXPAND_B", "2");
+    assert_eq!(
+      expand_env("${ROTA_TEST_EXPAND_A}-${ROTA_TEST_EXPAND_B}").unwrap(),
+      "1-2"
+    );
+    std::env::remove_var("ROTA_TEST_EXPAND_A");
+    std::env::remove_var("ROTA_TEST_EXPAND_B");
+  }
+
+  #[test]
+  fn expand_env_errors_on_unset_var() {
+    let err = expand_env("${ROTA_TEST_EXPAND_DEFINITELY_UNSET}").unwrap_err();
+    assert!(err
+      .to_string()
+      .contains("ROTA_TEST_EXPAND_DEFINITELY_UNSET"));
+  }
+
+  #[test]
+  fn expand_env_errors_on_unterminated_brace() {
+    assert!(expand_env("${ROTA_TEST_EXPAND_UNTERMINATED").is_err());
   }
 }
