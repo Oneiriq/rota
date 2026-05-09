@@ -179,6 +179,15 @@ struct SplitName {
 /// Split `_acme-challenge.example.com` into
 /// `(subdomain="_acme-challenge", sld="example", tld="com")`. The
 /// Namecheap DNS API addresses domains as separate SLD + TLD parts.
+///
+/// The subdomain is lowercased: Namecheap's `domains.dns.setHosts`
+/// validates HostName case-sensitively and rejects uppercase letters
+/// with `2050900: INVALID_NAME` — even though DNS itself is
+/// case-insensitive at resolution time. Sectigo's CSR-hash CNAME
+/// response delivers an uppercase MD5 hex (e.g. `_6958EA56...`);
+/// without normalization rota's setHosts call dies before the record
+/// is published. Sectigo's validator does a case-insensitive lookup
+/// so the lowercased CNAME still resolves correctly.
 fn split_record_name(record_name: &str) -> Result<SplitName> {
   let parts: Vec<&str> = record_name.trim_end_matches('.').split('.').collect();
   if parts.len() < 2 {
@@ -186,10 +195,10 @@ fn split_record_name(record_name: &str) -> Result<SplitName> {
       "record name not splittable into sld + tld: {record_name}"
     )));
   }
-  let tld = parts[parts.len() - 1].to_owned();
-  let sld = parts[parts.len() - 2].to_owned();
+  let tld = parts[parts.len() - 1].to_ascii_lowercase();
+  let sld = parts[parts.len() - 2].to_ascii_lowercase();
   let subdomain = if parts.len() > 2 {
-    parts[..parts.len() - 2].join(".")
+    parts[..parts.len() - 2].join(".").to_ascii_lowercase()
   } else {
     "@".to_owned()
   };
@@ -263,6 +272,19 @@ mod tests {
     assert_eq!(s.subdomain, "_acme-challenge");
     assert_eq!(s.sld, "example");
     assert_eq!(s.tld, "com");
+  }
+
+  #[test]
+  fn lowercases_uppercase_subdomain_for_namecheap_compat() {
+    // Sectigo's CSR-hash CNAME response delivers an uppercase MD5;
+    // Namecheap's setHosts rejects uppercase HostNames with 2050900.
+    // split_record_name normalizes to lowercase so the publish path
+    // doesn't blow up. DNS resolution is case-insensitive so this
+    // doesn't break Sectigo's validator.
+    let s = split_record_name("_6958EA56A4FE23DDF2C3EDA7B9B956A5.Oneiric.Dev").unwrap();
+    assert_eq!(s.subdomain, "_6958ea56a4fe23ddf2c3eda7b9b956a5");
+    assert_eq!(s.sld, "oneiric");
+    assert_eq!(s.tld, "dev");
   }
 
   #[test]
