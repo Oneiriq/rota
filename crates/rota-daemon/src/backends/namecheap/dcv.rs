@@ -62,7 +62,47 @@ impl NamecheapDcv {
   }
 }
 
-const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01];
+const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01, ChallengeKind::DnsCname];
+
+/// Parts of a `DcvChallenge` rota's namecheap DCV cares about,
+/// independent of the DNS record type. Pulling these out lets
+/// `publish` and `remove` share the get-merge-set dance regardless
+/// of TXT vs CNAME.
+struct ChallengeParts<'a> {
+  record_name: &'a str,
+  record_value: &'a str,
+  ttl: u32,
+  record_type: &'static str,
+}
+
+fn challenge_parts(challenge: &DcvChallenge) -> Result<ChallengeParts<'_>> {
+  match challenge {
+    DcvChallenge::Dns01 {
+      record_name,
+      record_value,
+      ttl,
+    } => Ok(ChallengeParts {
+      record_name,
+      record_value,
+      ttl: *ttl,
+      record_type: "TXT",
+    }),
+    DcvChallenge::DnsCname {
+      record_name,
+      record_value,
+      ttl,
+    } => Ok(ChallengeParts {
+      record_name,
+      record_value,
+      ttl: *ttl,
+      record_type: "CNAME",
+    }),
+    _ => Err(Error::Registrar(format!(
+      "namecheap dcv only supports dns-01 and dns-cname, got {}",
+      challenge.kind_str()
+    ))),
+  }
+}
 
 #[async_trait]
 impl DcvBackend for NamecheapDcv {
@@ -75,62 +115,47 @@ impl DcvBackend for NamecheapDcv {
   }
 
   async fn publish(&self, challenge: &DcvChallenge) -> Result<()> {
-    let DcvChallenge::Dns01 {
-      record_name,
-      record_value,
-      ttl,
-    } = challenge
-    else {
-      return Err(Error::Registrar(format!(
-        "namecheap dcv only supports dns-01, got {}",
-        challenge.kind_str()
-      )));
-    };
-    let split = split_record_name(record_name)?;
+    let parts = challenge_parts(challenge)?;
+    let split = split_record_name(parts.record_name)?;
     let mut hosts = self.get_hosts(&split.sld, &split.tld).await?;
 
-    // Idempotent: if the exact (host, value) already exists, no-op.
-    if hosts
-      .iter()
-      .any(|h| h.is_txt() && h.name == split.subdomain && h.address == *record_value)
-    {
-      debug!(record = %record_name, "namecheap txt already present");
+    // Idempotent: if the exact (type, host, value) already exists, no-op.
+    if hosts.iter().any(|h| {
+      h.record_type.eq_ignore_ascii_case(parts.record_type)
+        && h.name == split.subdomain
+        && h.address == parts.record_value
+    }) {
+      debug!(record = %parts.record_name, kind = %challenge.kind_str(), "namecheap dcv record already present");
       return Ok(());
     }
 
     hosts.push(HostRecord {
       name: split.subdomain,
-      record_type: "TXT".to_owned(),
-      address: record_value.clone(),
+      record_type: parts.record_type.to_owned(),
+      address: parts.record_value.to_owned(),
       mx_pref: "10".to_owned(),
-      ttl: (*ttl).max(60),
+      ttl: parts.ttl.max(60),
     });
 
-    info!(record = %record_name, "namecheap publishing dcv txt");
+    info!(record = %parts.record_name, kind = %challenge.kind_str(), "namecheap publishing dcv record");
     self.set_hosts(&split.sld, &split.tld, &hosts).await
   }
 
   async fn remove(&self, challenge: &DcvChallenge) -> Result<()> {
-    let DcvChallenge::Dns01 {
-      record_name,
-      record_value,
-      ..
-    } = challenge
-    else {
-      return Err(Error::Registrar(format!(
-        "namecheap dcv only supports dns-01, got {}",
-        challenge.kind_str()
-      )));
-    };
-    let split = split_record_name(record_name)?;
+    let parts = challenge_parts(challenge)?;
+    let split = split_record_name(parts.record_name)?;
     let hosts = self.get_hosts(&split.sld, &split.tld).await?;
 
     let filtered: Vec<HostRecord> = hosts
       .into_iter()
-      .filter(|h| !(h.is_txt() && h.name == split.subdomain && h.address == *record_value))
+      .filter(|h| {
+        !(h.record_type.eq_ignore_ascii_case(parts.record_type)
+          && h.name == split.subdomain
+          && h.address == parts.record_value)
+      })
       .collect();
 
-    info!(record = %record_name, "namecheap removing dcv txt");
+    info!(record = %parts.record_name, kind = %challenge.kind_str(), "namecheap removing dcv record");
     self.set_hosts(&split.sld, &split.tld, &filtered).await
   }
 }
@@ -142,12 +167,6 @@ struct HostRecord {
   address: String,
   mx_pref: String,
   ttl: u32,
-}
-
-impl HostRecord {
-  fn is_txt(&self) -> bool {
-    self.record_type.eq_ignore_ascii_case("TXT")
-  }
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +297,6 @@ mod tests {
     assert_eq!(hosts.len(), 3);
     assert_eq!(hosts[0].name, "@");
     assert_eq!(hosts[1].record_type, "CNAME");
-    assert!(hosts[2].is_txt());
+    assert!(hosts[2].record_type.eq_ignore_ascii_case("TXT"));
   }
 }

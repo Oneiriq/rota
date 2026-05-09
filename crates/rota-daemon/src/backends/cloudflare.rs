@@ -162,7 +162,26 @@ impl CloudflareDcv {
   }
 }
 
-const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01];
+const SUPPORTED: &[ChallengeKind] = &[ChallengeKind::Dns01, ChallengeKind::DnsCname];
+
+fn challenge_record(challenge: &DcvChallenge) -> Result<(&str, &str, &str, u32)> {
+  match challenge {
+    DcvChallenge::Dns01 {
+      record_name,
+      record_value,
+      ttl,
+    } => Ok(("TXT", record_name, record_value, *ttl)),
+    DcvChallenge::DnsCname {
+      record_name,
+      record_value,
+      ttl,
+    } => Ok(("CNAME", record_name, record_value, *ttl)),
+    _ => Err(Error::Registrar(format!(
+      "cloudflare dcv only supports dns-01 and dns-cname, got {}",
+      challenge.kind_str()
+    ))),
+  }
+}
 
 #[async_trait]
 impl DcvBackend for CloudflareDcv {
@@ -175,67 +194,46 @@ impl DcvBackend for CloudflareDcv {
   }
 
   async fn publish(&self, challenge: &DcvChallenge) -> Result<()> {
-    let DcvChallenge::Dns01 {
-      record_name,
-      record_value,
-      ttl,
-    } = challenge
-    else {
-      return Err(Error::Registrar(format!(
-        "cloudflare dcv only supports dns-01, got {}",
-        challenge.kind_str()
-      )));
-    };
+    let (record_type, record_name, record_value, ttl) = challenge_record(challenge)?;
     let zone_id = self.find_zone_id(record_name).await?;
 
     if self
-      .find_matching_record(&zone_id, record_name, record_value)
+      .find_matching_record(&zone_id, record_type, record_name, record_value)
       .await?
       .is_some()
     {
-      debug!(record = %record_name, "cloudflare txt already present");
+      debug!(record = %record_name, kind = %challenge.kind_str(), "cloudflare dcv record already present");
       return Ok(());
     }
 
     let body = json!({
-      "type": "TXT",
+      "type": record_type,
       "name": record_name,
       "content": record_value,
-      "ttl": (*ttl).max(TXT_TTL_FALLBACK),
+      "ttl": ttl.max(TXT_TTL_FALLBACK),
     });
     let _: DnsRecordResponse = self
       .client
       .post(&format!("/zones/{zone_id}/dns_records"), body)
       .await?;
-    info!(record = %record_name, "cloudflare publishing dcv txt");
+    info!(record = %record_name, kind = %challenge.kind_str(), "cloudflare publishing dcv record");
     Ok(())
   }
 
   async fn remove(&self, challenge: &DcvChallenge) -> Result<()> {
-    let DcvChallenge::Dns01 {
-      record_name,
-      record_value,
-      ..
-    } = challenge
-    else {
-      return Err(Error::Registrar(format!(
-        "cloudflare dcv only supports dns-01, got {}",
-        challenge.kind_str()
-      )));
-    };
+    let (record_type, record_name, record_value, _ttl) = challenge_record(challenge)?;
     let zone_id = self.find_zone_id(record_name).await?;
     let Some(record_id) = self
-      .find_matching_record(&zone_id, record_name, record_value)
+      .find_matching_record(&zone_id, record_type, record_name, record_value)
       .await?
     else {
-      // Idempotent: nothing to delete.
       return Ok(());
     };
     let _: DeletedRecord = self
       .client
       .delete(&format!("/zones/{zone_id}/dns_records/{record_id}"))
       .await?;
-    info!(record = %record_name, "cloudflare removed dcv txt");
+    info!(record = %record_name, kind = %challenge.kind_str(), "cloudflare removed dcv record");
     Ok(())
   }
 }
@@ -267,13 +265,14 @@ impl CloudflareDcv {
   async fn find_matching_record(
     &self,
     zone_id: &str,
+    record_type: &str,
     name: &str,
     value: &str,
   ) -> Result<Option<String>> {
     let records: Vec<DnsRecord> = self
       .client
       .get(&format!(
-        "/zones/{zone_id}/dns_records?type=TXT&name={name}"
+        "/zones/{zone_id}/dns_records?type={record_type}&name={name}"
       ))
       .await?;
     Ok(

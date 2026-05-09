@@ -218,10 +218,15 @@ impl CABackend for AcmeCa {
       // error. Inspect the (publicly Deref-exposed) challenge list
       // immutably first to pick the kind, then make exactly one
       // mutable `challenge()` call.
+      // ACME (RFC 8555) only knows DNS-01 (TXT) and HTTP-01.
+      // ChallengeKind::DnsCname is a non-ACME concept (Sectigo
+      // CSR-hash flow); ACME never emits a CNAME challenge so we
+      // skip that variant when matching against ACME's offer.
       let chosen_kind = preference.iter().copied().find(|k| {
         let acme_kind = match k {
           ChallengeKind::Dns01 => ChallengeType::Dns01,
           ChallengeKind::Http01 => ChallengeType::Http01,
+          ChallengeKind::DnsCname => return false,
         };
         authz.challenges.iter().any(|c| c.r#type == acme_kind)
       });
@@ -234,6 +239,7 @@ impl CABackend for AcmeCa {
       let acme_kind = match kind {
         ChallengeKind::Dns01 => ChallengeType::Dns01,
         ChallengeKind::Http01 => ChallengeType::Http01,
+        ChallengeKind::DnsCname => unreachable!("filtered above"),
       };
       let c = authz.challenge(acme_kind).expect("kind verified above");
       let challenge = match kind {
@@ -247,6 +253,7 @@ impl CABackend for AcmeCa {
           token: c.token.clone(),
           key_authorization: c.key_authorization().as_str().to_owned(),
         },
+        ChallengeKind::DnsCname => unreachable!("filtered above"),
       };
       challenges.push(challenge);
     }

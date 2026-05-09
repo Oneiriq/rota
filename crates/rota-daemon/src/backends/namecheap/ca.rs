@@ -97,17 +97,27 @@ impl CABackend for NamecheapCa {
       .await?;
     resp.ensure_ok()?;
 
-    let (record_name, record_value) = if let (Some(name), Some(value)) =
+    let challenge = if let (Some(record_name), Some(record_value)) =
       (resp.first_text("TxtName"), resp.first_text("TxtValue"))
     {
-      (name, value)
-    } else if let (Some(name), Some(target)) =
+      DcvChallenge::Dns01 {
+        record_name,
+        record_value,
+        ttl: DCV_TTL_SECONDS,
+      }
+    } else if let (Some(record_name), Some(record_value)) =
       (resp.first_text("HostName"), resp.first_text("Target"))
     {
-      // CNAME validation surfaces as Name -> Target. We treat it as a
-      // TXT record from the trait surface; backends that only accept
-      // CNAMEs will reject downstream and we'll widen the trait then.
-      (name, target)
+      // Sectigo CSR-hash and the legacy Comodo CNAME flow both surface
+      // as <HostName> -> <Target>. The CA expects a CNAME, NOT a TXT;
+      // hostname-validity rules at registrar APIs differ between the
+      // two record types (Namecheap rejected `_<MD5>` as TXT name
+      // before the trait was widened to carry record type).
+      DcvChallenge::DnsCname {
+        record_name,
+        record_value,
+        ttl: DCV_TTL_SECONDS,
+      }
     } else {
       // Dump the response at debug level so an operator with
       // `RUST_LOG=debug` can file an actionable bug report without
@@ -124,14 +134,10 @@ impl CABackend for NamecheapCa {
       ));
     };
 
-    info!(record = %record_name, "namecheap reissue accepted, dcv pending");
+    info!(record = %challenge.label(), kind = %challenge.kind_str(), "namecheap reissue accepted, dcv pending");
     // Namecheap reissue folds every SAN under one DCV record, so
     // the trait's Vec always has exactly one element here.
-    Ok(vec![DcvChallenge::Dns01 {
-      record_name,
-      record_value,
-      ttl: DCV_TTL_SECONDS,
-    }])
+    Ok(vec![challenge])
   }
 
   async fn await_issuance(&self, _domains: &[String]) -> Result<IssuedCert> {
