@@ -6,6 +6,7 @@
 //! config. Operators activate once by hand in Namecheap's UI; rota
 //! handles every renewal after that.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,15 +22,36 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const POLL_DEADLINE: Duration = Duration::from_secs(60 * 30); // 30 min
 const DCV_TTL_SECONDS: u32 = 300;
 
-#[derive(Debug, Clone)]
+/// Namecheap CA backend tracks two SSL IDs:
+///
+/// * `initial_ssl_id` — the ID the operator put in `rota.yaml`. Stays
+///   constant; identifies the long-lived SSL subscription line at
+///   Namecheap.
+/// * `active_ssl_id` — the ID rota currently polls. Each successful
+///   `namecheap.ssl.reissue` creates a NEW SSL ID under the same
+///   subscription (the original gets `Status="replaced"` and a
+///   `ReplacedBy` pointer). `submit()` extracts the new ID from
+///   `<SSLReissueResult ID="...">` and stores it here so
+///   `await_issuance()` polls the right cert. Falls back to
+///   `initial_ssl_id` until the first `submit()` runs.
+#[derive(Debug)]
 pub struct NamecheapCa {
   client: Arc<NamecheapClient>,
-  ssl_id: u64,
+  initial_ssl_id: u64,
+  active_ssl_id: AtomicU64,
 }
 
 impl NamecheapCa {
   pub fn new(client: Arc<NamecheapClient>, ssl_id: u64) -> Self {
-    Self { client, ssl_id }
+    Self {
+      client,
+      initial_ssl_id: ssl_id,
+      active_ssl_id: AtomicU64::new(ssl_id),
+    }
+  }
+
+  fn current_ssl_id(&self) -> u64 {
+    self.active_ssl_id.load(Ordering::Relaxed)
   }
 
   async fn get_info(&self) -> Result<NamecheapCertInfo> {
@@ -38,7 +60,7 @@ impl NamecheapCa {
       .call(
         "namecheap.ssl.getInfo",
         [
-          ("CertificateID", self.ssl_id.to_string()),
+          ("CertificateID", self.current_ssl_id().to_string()),
           ("Returncertificate", "true".to_owned()),
           ("Returntype", "Individual".to_owned()),
         ],
@@ -46,10 +68,19 @@ impl NamecheapCa {
       .await?;
     resp.ensure_ok()?;
 
+    // The actual response carries Status as an attribute on
+    // `<SSLGetInfoResult ...>`, not on a separate `<SSLStatus>` element
+    // and not as element text. The legacy lookup paths (`SSLStatus`
+    // attr + `<Status>` text) are kept as fallbacks for older response
+    // shapes but the primary read is now correct.
     let status = resp
-      .first_attribute("SSLStatus", "Status")
+      .first_attribute("SSLGetInfoResult", "Status")
+      .or_else(|| resp.first_attribute("SSLStatus", "Status"))
       .or_else(|| resp.first_text("Status"))
       .unwrap_or_default();
+    let replaced_by = resp
+      .first_attribute("SSLGetInfoResult", "ReplacedBy")
+      .and_then(|s| s.parse::<u64>().ok());
     let cert_pem = resp.first_text("CertificateReturned").unwrap_or_default();
     let chain_pem = resp.first_text("CACertificate").unwrap_or_default();
 
@@ -57,6 +88,7 @@ impl NamecheapCa {
       status,
       cert_pem,
       chain_pem,
+      replaced_by,
     })
   }
 }
@@ -88,7 +120,7 @@ impl CABackend for NamecheapCa {
       .call(
         "namecheap.ssl.reissue",
         [
-          ("CertificateID", self.ssl_id.to_string()),
+          ("CertificateID", self.initial_ssl_id.to_string()),
           ("csr", csr_pem.to_owned()),
           ("DNSDCValidation", "true".to_owned()),
           ("WebServerType", "other".to_owned()),
@@ -96,6 +128,24 @@ impl CABackend for NamecheapCa {
       )
       .await?;
     resp.ensure_ok()?;
+
+    // Capture the new SSL ID Namecheap created for this reissue and
+    // promote it to active. Subsequent `get_info` polls land on this
+    // new cert rather than on the parent (whose status flips to
+    // `replaced` once the reissue is accepted).
+    if let Some(new_id) = resp
+      .first_attribute("SSLReissueResult", "ID")
+      .and_then(|s| s.parse::<u64>().ok())
+    {
+      let prev = self.active_ssl_id.swap(new_id, Ordering::Relaxed);
+      if prev != new_id {
+        info!(
+          prev_ssl_id = prev,
+          new_ssl_id = new_id,
+          "namecheap reissue promoted active ssl id"
+        );
+      }
+    }
 
     let challenge = if let (Some(record_name), Some(record_value)) =
       (resp.first_text("TxtName"), resp.first_text("TxtValue"))
@@ -151,6 +201,22 @@ impl CABackend for NamecheapCa {
             chain_pem: info.chain_pem,
           });
         }
+        Ok(info) if info.status.eq_ignore_ascii_case("replaced") => {
+          // Chase the chain: when an SSL ID has been replaced, the
+          // currently-issuing cert lives at `ReplacedBy`. Promote it
+          // and skip the sleep so polling can resume against the
+          // right ID immediately.
+          if let Some(replacement) = info.replaced_by {
+            let prev = self.active_ssl_id.swap(replacement, Ordering::Relaxed);
+            warn!(
+              prev_ssl_id = prev,
+              new_ssl_id = replacement,
+              "namecheap ssl id replaced, following chain"
+            );
+            continue;
+          }
+          warn!("namecheap status=replaced but no ReplacedBy in response, retrying");
+        }
         Ok(info) => {
           warn!(status = %info.status, "namecheap cert not ready, polling");
         }
@@ -175,6 +241,11 @@ struct NamecheapCertInfo {
   status: String,
   cert_pem: String,
   chain_pem: String,
+  /// Set when `<SSLGetInfoResult ReplacedBy="..."/>` is present.
+  /// `Status="replaced"` means this cert is no longer the active
+  /// one — the operator (or rota's own reissue) created a successor
+  /// at this ID.
+  replaced_by: Option<u64>,
 }
 
 impl NamecheapCertInfo {
