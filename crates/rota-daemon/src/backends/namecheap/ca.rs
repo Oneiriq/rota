@@ -6,6 +6,8 @@
 //! config. Operators activate once by hand in Namecheap's UI; rota
 //! handles every renewal after that.
 
+use std::collections::HashSet;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,12 +23,20 @@ use super::client::NamecheapClient;
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const POLL_DEADLINE: Duration = Duration::from_secs(60 * 30); // 30 min
 const DCV_TTL_SECONDS: u32 = 300;
+/// Most links followed from the configured SSL ID to the current
+/// certificate. Each renewal adds one link, so a chain this long takes
+/// decades of renewals; reaching it means the chain loops.
+const MAX_CHAIN_HOPS: usize = 32;
 
 /// Namecheap CA backend tracks two SSL IDs:
 ///
 /// * `initial_ssl_id` — the ID the operator put in `rota.yaml`. Stays
 ///   constant; identifies the long-lived SSL subscription line at
-///   Namecheap.
+///   Namecheap. It is where every renewal starts looking, not what it
+///   reissues: after the first reissue it is `replaced`, and Namecheap
+///   refuses to reissue a replaced certificate (`4011331: Status is
+///   InValid`). `submit()` follows the `ReplacedBy` chain from here to
+///   the current certificate and reissues that one.
 /// * `active_ssl_id` — the ID rota currently polls. Each successful
 ///   `namecheap.ssl.reissue` creates a NEW SSL ID under the same
 ///   subscription (the original gets `Status="replaced"` and a
@@ -55,17 +65,18 @@ impl NamecheapCa {
   }
 
   async fn get_info(&self) -> Result<NamecheapCertInfo> {
-    let resp = self
-      .client
-      .call(
-        "namecheap.ssl.getInfo",
-        [
-          ("CertificateID", self.current_ssl_id().to_string()),
-          ("Returncertificate", "true".to_owned()),
-          ("Returntype", "Individual".to_owned()),
-        ],
-      )
-      .await?;
+    self.get_info_for(self.current_ssl_id(), true).await
+  }
+
+  /// `namecheap.ssl.getInfo` for one SSL ID. `with_cert` asks for the
+  /// PEMs as well; the chain walk needs only the status.
+  async fn get_info_for(&self, ssl_id: u64, with_cert: bool) -> Result<NamecheapCertInfo> {
+    let mut params = vec![("CertificateID", ssl_id.to_string())];
+    if with_cert {
+      params.push(("Returncertificate", "true".to_owned()));
+      params.push(("Returntype", "Individual".to_owned()));
+    }
+    let resp = self.client.call("namecheap.ssl.getInfo", params).await?;
     resp.ensure_ok()?;
 
     // The actual response carries Status as an attribute on
@@ -104,6 +115,51 @@ impl NamecheapCa {
       replaced_by,
     })
   }
+
+  /// The SSL ID a reissue must target: the end of the `ReplacedBy`
+  /// chain that starts at the configured ID, with its status.
+  async fn reissue_target(&self) -> Result<(u64, String)> {
+    follow_replacements(self.initial_ssl_id, |id| async move {
+      let info = self.get_info_for(id, false).await?;
+      Ok((info.status, info.replaced_by))
+    })
+    .await
+  }
+}
+
+/// Walk Namecheap's `ReplacedBy` chain from `start` to the first SSL ID
+/// that is not `replaced`, and return it with its status. `lookup`
+/// gives an ID's status and successor. A replaced ID with no successor,
+/// a loop, or a chain longer than [`MAX_CHAIN_HOPS`] is an error.
+async fn follow_replacements<F, Fut>(start: u64, mut lookup: F) -> Result<(u64, String)>
+where
+  F: FnMut(u64) -> Fut,
+  Fut: Future<Output = Result<(String, Option<u64>)>>,
+{
+  let mut id = start;
+  let mut seen = HashSet::new();
+  for _ in 0..=MAX_CHAIN_HOPS {
+    if !seen.insert(id) {
+      return Err(Error::Ca(format!(
+        "namecheap ReplacedBy chain from ssl id {start} loops back to {id}"
+      )));
+    }
+    let (status, replaced_by) = lookup(id).await?;
+    if !status.eq_ignore_ascii_case("replaced") {
+      return Ok((id, status));
+    }
+    match replaced_by {
+      Some(next) => id = next,
+      None => {
+        return Err(Error::Ca(format!(
+          "namecheap ssl id {id} is replaced but names no successor"
+        )))
+      }
+    }
+  }
+  Err(Error::Ca(format!(
+    "namecheap ReplacedBy chain from ssl id {start} is longer than {MAX_CHAIN_HOPS} links"
+  )))
 }
 
 #[async_trait]
@@ -128,19 +184,32 @@ impl CABackend for NamecheapCa {
     // DNS-01 over their API. If the operator pairs a Namecheap CA
     // with a webroot DCV solver, the renewer's supports() preflight
     // catches the mismatch and reports it cleanly.
+    let (target, status) = self.reissue_target().await?;
+    if target != self.initial_ssl_id {
+      info!(
+        configured_ssl_id = self.initial_ssl_id,
+        current_ssl_id = target,
+        %status,
+        "namecheap reissue targets the current certificate in the chain"
+      );
+    }
+    self.active_ssl_id.store(target, Ordering::Relaxed);
     let resp = self
       .client
       .call(
         "namecheap.ssl.reissue",
         [
-          ("CertificateID", self.initial_ssl_id.to_string()),
+          ("CertificateID", target.to_string()),
           ("csr", csr_pem.to_owned()),
           ("DNSDCValidation", "true".to_owned()),
           ("WebServerType", "other".to_owned()),
         ],
       )
       .await?;
-    resp.ensure_ok()?;
+    resp.ensure_ok().map_err(|err| match err {
+      Error::Ca(msg) => Error::Ca(format!("reissue of ssl id {target} (status {status}): {msg}")),
+      other => other,
+    })?;
 
     // Capture the new SSL ID Namecheap created for this reissue and
     // promote it to active. Subsequent `get_info` polls land on this
@@ -265,5 +334,85 @@ impl NamecheapCertInfo {
   fn is_issued(&self) -> bool {
     !self.cert_pem.trim().is_empty()
       && (self.status.eq_ignore_ascii_case("active") || self.status.eq_ignore_ascii_case("issued"))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::collections::HashMap;
+
+  use super::*;
+
+  /// A fake Namecheap: each SSL ID's status and successor.
+  fn chain(links: &[(u64, &str, Option<u64>)]) -> HashMap<u64, (String, Option<u64>)> {
+    links
+      .iter()
+      .map(|&(id, status, next)| (id, (status.to_owned(), next)))
+      .collect()
+  }
+
+  async fn walk(start: u64, ids: &HashMap<u64, (String, Option<u64>)>) -> Result<(u64, String)> {
+    follow_replacements(start, |id| {
+      let found = ids.get(&id).cloned();
+      async move { found.ok_or_else(|| Error::Ca(format!("no ssl id {id}"))) }
+    })
+    .await
+  }
+
+  #[tokio::test]
+  async fn an_active_configured_id_is_its_own_target() {
+    let ids = chain(&[(100, "active", None)]);
+    let (id, status) = walk(100, &ids).await.expect("an active id resolves");
+    assert_eq!((id, status.as_str()), (100, "active"));
+  }
+
+  #[tokio::test]
+  async fn a_replaced_id_resolves_to_the_end_of_its_chain() {
+    // The configured id was reissued twice: rota must reissue the latest.
+    let ids = chain(&[
+      (100, "replaced", Some(200)),
+      (200, "Replaced", Some(300)),
+      (300, "active", None),
+    ]);
+    let (id, status) = walk(100, &ids).await.expect("the chain resolves");
+    assert_eq!((id, status.as_str()), (300, "active"));
+  }
+
+  #[tokio::test]
+  async fn the_end_of_the_chain_is_returned_whatever_its_status() {
+    let ids = chain(&[(100, "replaced", Some(200)), (200, "purchased", None)]);
+    let (id, status) = walk(100, &ids).await.expect("the chain resolves");
+    assert_eq!((id, status.as_str()), (200, "purchased"));
+  }
+
+  #[tokio::test]
+  async fn a_replaced_id_without_a_successor_is_an_error() {
+    let ids = chain(&[(100, "replaced", None)]);
+    let err = walk(100, &ids).await.expect_err("a dead end is refused");
+    assert!(err.to_string().contains("names no successor"), "{err}");
+  }
+
+  #[tokio::test]
+  async fn a_loop_is_an_error() {
+    let ids = chain(&[(100, "replaced", Some(200)), (200, "replaced", Some(100))]);
+    let err = walk(100, &ids).await.expect_err("a loop is refused");
+    assert!(err.to_string().contains("loops back"), "{err}");
+  }
+
+  #[tokio::test]
+  async fn a_chain_longer_than_the_limit_is_an_error() {
+    let links: Vec<(u64, &str, Option<u64>)> = (0..=(MAX_CHAIN_HOPS as u64 + 1))
+      .map(|i| (i, "replaced", Some(i + 1)))
+      .collect();
+    let ids = chain(&links);
+    let err = walk(0, &ids).await.expect_err("an endless chain is refused");
+    assert!(err.to_string().contains("longer than"), "{err}");
+  }
+
+  #[tokio::test]
+  async fn a_lookup_failure_stops_the_walk() {
+    let ids = chain(&[(100, "replaced", Some(200))]);
+    let err = walk(100, &ids).await.expect_err("a missing id is an error");
+    assert!(err.to_string().contains("no ssl id 200"), "{err}");
   }
 }

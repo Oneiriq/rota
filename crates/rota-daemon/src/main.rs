@@ -24,7 +24,7 @@ use rota_daemon::install_sync::{InstallSyncConfig, InstallSyncTask};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
 use rota_daemon::socket::SocketServer;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -66,6 +66,12 @@ async fn main() -> Result<()> {
   }
 
   let alerts = backends::build_alerts(&config.alerts)?;
+  if alerts.is_empty() {
+    // A failed renewal is then only a log line and a metric. That is
+    // how two certificates once expired after a month of failures that
+    // nobody saw: configure an email or webhook sink under `alerts:`.
+    warn!("no alert sinks configured: renewal failures will only be logged");
+  }
   for alert in &alerts {
     info!(backend = %alert.name(), "alert sink bound");
   }
