@@ -207,7 +207,9 @@ impl CABackend for NamecheapCa {
       )
       .await?;
     resp.ensure_ok().map_err(|err| match err {
-      Error::Ca(msg) => Error::Ca(format!("reissue of ssl id {target} (status {status}): {msg}")),
+      Error::Ca(msg) => Error::Ca(format!(
+        "reissue of ssl id {target} (status {status}): {msg}"
+      )),
       other => other,
     })?;
 
@@ -405,7 +407,9 @@ mod tests {
       .map(|i| (i, "replaced", Some(i + 1)))
       .collect();
     let ids = chain(&links);
-    let err = walk(0, &ids).await.expect_err("an endless chain is refused");
+    let err = walk(0, &ids)
+      .await
+      .expect_err("an endless chain is refused");
     assert!(err.to_string().contains("longer than"), "{err}");
   }
 
