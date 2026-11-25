@@ -12,8 +12,9 @@
 //! whatever auth they already use (DSM, Caddy basic-auth, oauth2-
 //! proxy). Avoids inventing yet-another auth layer here.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
@@ -38,6 +39,52 @@ pub struct DashboardState {
   pub bundles: Arc<Vec<CertBackends>>,
   pub audit: Arc<dyn AuditStore>,
   pub renewer: Arc<CertRenewer>,
+  /// Certs with a dashboard-started renewal still running.
+  pub manual: ManualRenewals,
+}
+
+/// The certs a dashboard-started renewal is running for, so a second
+/// click while one runs does not reissue twice.
+#[derive(Debug, Clone, Default)]
+pub struct ManualRenewals(Arc<Mutex<HashSet<String>>>);
+
+impl ManualRenewals {
+  /// Claim `id` for a renewal. `None` when one is already running; the
+  /// claim is released when the returned guard drops, panics included.
+  pub fn claim(&self, id: &str) -> Option<ManualClaim> {
+    let mut running = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+    running.insert(id.to_owned()).then(|| ManualClaim {
+      running: self.clone(),
+      id: id.to_owned(),
+    })
+  }
+
+  /// Whether a dashboard-started renewal for `id` is running.
+  pub fn is_running(&self, id: &str) -> bool {
+    self
+      .0
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .contains(id)
+  }
+}
+
+/// A held claim on a cert's manual renewal.
+#[derive(Debug)]
+pub struct ManualClaim {
+  running: ManualRenewals,
+  id: String,
+}
+
+impl Drop for ManualClaim {
+  fn drop(&mut self) {
+    self
+      .running
+      .0
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .remove(&self.id);
+  }
 }
 
 /// Bind and serve forever. The listener is bound by this function so
@@ -105,11 +152,27 @@ async fn metrics_endpoint() -> Response {
 
 /// POST /cert/{id}/renew: kick a manual renewal and redirect back.
 async fn renew_cert(State(state): State<DashboardState>, Path(id): Path<String>) -> Response {
-  let Some(bundle) = state.bundles.iter().find(|b| b.config.id == id) else {
+  let Some(index) = state.bundles.iter().position(|b| b.config.id == id) else {
     return not_found(&id);
   };
-  if let Err(err) = state.renewer.run(bundle).await {
-    warn!(cert = %id, error = %err, "manual renewal failed");
+  // The renewal runs as its own task, so it outlives this request: a
+  // closed tab or a client timeout must not cancel it halfway through a
+  // CA order. A Namecheap reissue whose polling is dropped leaves its new
+  // SSL ID issued but never installed.
+  match state.manual.claim(&id) {
+    Some(claim) => {
+      let bundles = Arc::clone(&state.bundles);
+      let renewer = Arc::clone(&state.renewer);
+      tokio::spawn(async move {
+        let _claim = claim;
+        if let Some(bundle) = bundles.get(index) {
+          if let Err(err) = renewer.run(bundle).await {
+            warn!(cert = %bundle.config.id, error = %err, "manual renewal failed");
+          }
+        }
+      });
+    }
+    None => info!(cert = %id, "a manual renewal is already running; not starting another"),
   }
   Redirect::to(&format!("/cert/{id}")).into_response()
 }
