@@ -105,6 +105,14 @@ impl Scheduler {
       threshold_days = self.config.threshold_days,
       "scheduler started"
     );
+    if self.alerts.is_empty() {
+      // A failed renewal is then only a log line and a metric. That is
+      // how two certificates once expired after a month of failures
+      // nobody saw: configure an email or webhook sink under `alerts:`.
+      // Logged here, under the library's target, so the usual
+      // `RUST_LOG=rota_daemon=...` filter shows it.
+      warn!("no alert sinks configured: renewal failures will only be logged");
+    }
     let mut ticker = tokio::time::interval(self.config.check_interval);
     // Skip the immediate-fire that interval emits at t=0 so we don't
     // hammer every CA on daemon startup. The first sweep happens

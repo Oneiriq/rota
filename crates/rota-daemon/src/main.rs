@@ -19,12 +19,12 @@ use rota_daemon::backends;
 use rota_daemon::cluster::NoOpCoordinator;
 #[cfg(feature = "surrealdb")]
 use rota_daemon::cluster::SurrealClusterCoordinator;
-use rota_daemon::dashboard::{self, DashboardState};
+use rota_daemon::dashboard::{self, DashboardState, ManualRenewals};
 use rota_daemon::install_sync::{InstallSyncConfig, InstallSyncTask};
 use rota_daemon::renewer::CertRenewer;
 use rota_daemon::scheduler::{Scheduler, SchedulerConfig};
 use rota_daemon::socket::SocketServer;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -66,12 +66,6 @@ async fn main() -> Result<()> {
   }
 
   let alerts = backends::build_alerts(&config.alerts)?;
-  if alerts.is_empty() {
-    // A failed renewal is then only a log line and a metric. That is
-    // how two certificates once expired after a month of failures that
-    // nobody saw: configure an email or webhook sink under `alerts:`.
-    warn!("no alert sinks configured: renewal failures will only be logged");
-  }
   for alert in &alerts {
     info!(backend = %alert.name(), "alert sink bound");
   }
@@ -118,6 +112,7 @@ async fn main() -> Result<()> {
     bundles: Arc::clone(&bundles),
     audit: Arc::clone(&audit),
     renewer: Arc::clone(&renewer),
+    manual: ManualRenewals::default(),
   };
   let dashboard_addr = config.daemon.listen_addr.clone();
 

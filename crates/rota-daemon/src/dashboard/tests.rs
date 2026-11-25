@@ -93,6 +93,7 @@ async fn build_router_state() -> DashboardState {
     bundles,
     audit,
     renewer,
+    manual: ManualRenewals::default(),
   }
 }
 
@@ -208,6 +209,7 @@ async fn empty_dashboard_says_no_certs() {
     bundles: Arc::new(vec![]),
     audit,
     renewer,
+    manual: ManualRenewals::default(),
   };
   let app = router(state);
   let resp = app
@@ -217,4 +219,23 @@ async fn empty_dashboard_says_no_certs() {
   assert_eq!(resp.status(), StatusCode::OK);
   let body = body_string(resp).await;
   assert!(body.contains("no certs configured"));
+}
+
+#[test]
+fn a_manual_renewal_claims_its_cert_until_the_claim_drops() {
+  let manual = ManualRenewals::default();
+  let first = manual.claim("alpha");
+  assert!(first.is_some());
+  assert!(manual.is_running("alpha"));
+  assert!(
+    manual.claim("alpha").is_none(),
+    "a second click must not start a second renewal"
+  );
+  assert!(
+    manual.claim("beta").is_some(),
+    "another cert is not blocked"
+  );
+  drop(first);
+  assert!(!manual.is_running("alpha"));
+  assert!(manual.claim("alpha").is_some());
 }
